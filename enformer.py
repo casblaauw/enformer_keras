@@ -174,9 +174,8 @@ class AttentionPooling1D(tf.keras.layers.Layer):
         config = super().get_config()
         config.update({
             "pool_size": self.pool_size,
-            "_per_channel": self._per_channel,
-            "_w_init_scale": self._w_init_scale,
-            "_logit_linear": self._logit_linear,
+            "per_channel": self._per_channel,
+            "w_init_scale": self._w_init_scale,
             "data_format": self.data_format,
             "strides": self.strides,
             "padding": self.padding
@@ -200,8 +199,6 @@ class AttentionPooling1D(tf.keras.layers.Layer):
         #     inputs * tf.nn.softmax(tf.matmul(inputs, self.w), axis=-2),
         #     axis=-2)
 
-    
-    
     
 # pooling method
 def pooling(pooling_type, pool_size, training=False):
@@ -261,10 +258,17 @@ class MHABlock(Layer):
         then combined with a Residual FeedForward block to become a Transformer.
         """
         super().__init__(name=name, **kwargs)
+        self.dropout_rate = dropout_rate
+
         self.mha_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm1')
         self.mha = MHSelfAttention()
         self.mha_dropout = layers.Dropout(rate=dropout_rate)
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({"dropout_rate": self.dropout_rate})
+        return config
+    
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
         x = self.mha_ln(inputs)
         x = self.mha(x, training=training)
@@ -275,12 +279,21 @@ class FeedForward(Layer):
         """FeedForward block, for use in a Residual layer,
          after a Residual MHABlock, which together becomes a Transformer."""
         super().__init__(name=name, **kwargs)
+        self.channels = channels
+        self.dropout_rate = dropout_rate
+
         self.mlp_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm2')
         self.mlp_linear1 = layers.Dense(units=channels*2, name='ffn1')
         self.mlp_dropout1 = layers.Dropout(rate=dropout_rate)
         self.mlp_linear2 = layers.Dense(units=channels, name='ffn2')
         self.mlp_dropout2 = layers.Dropout(rate=dropout_rate)
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({"channels": self.channels,
+                       "dropout_rate": self.dropout_rate})
+        return config
+    
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
         x = self.mlp_ln(inputs)
         x = self.mlp_linear1(x)
