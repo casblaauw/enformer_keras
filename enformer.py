@@ -31,31 +31,31 @@ class Enformer(Model):
         # Attention parameters       
         attention_params = {
             # number of features of query/key matrix
-            "query_dim": 64,
+            "query_dim": config.query_dim,
             # number of features of the value matrix
-            "value_dim": 192,
+            "value_dim": config.value_dim,
             # number of heads
-            "num_heads": 8,
-            "scaling": True,
+            "num_heads": config.heads,
+            "scaling": config.scaling,
             # attention dropout rate
-            'attn_dropout_rate':0.05,
+            'attn_dropout_rate': config.attn_dropout,
             # positional encoding dropout rate
-            'pos_dropout_rate':0.01,
+            'pos_dropout_rate': config.pos_dropout,
             # calculate positional encoding
-            'pos_encoding':True,
+            'pos_encoding': config.pos_encoding,
             # calculate positional features only symmetric relative to position 0
-            "symmetric_pos_encoding":False,
+            "symmetric_pos_encoding": config.symmetric_pos_encoding,
             # positional encoding functions to be used
             # ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma']
             # ['pos_feats_cosine', 'pos_feats_linear_masks', 'pos_feats_sin_cos']
-            "pos_encoding_funs":None,
+            "pos_encoding_funs": config.pos_encoding_funs,
             # number of positional encoding features
             # min 6 for default relative_position_functions
             # min 12 for positional_features_sin_cos
-            "num_pos_feats" : 192,
+            "num_pos_feats" : config.pos_feats,
             # zero initialize
-            "zero_init" : True,
-            "initializer" : None}
+            "zero_init" : config.zero_init,
+            "initializer" : config.initializer}
         
         # STEM
         self.stem = Sequential([Input(shape=(self._seq_len, self._encoding_in)),
