@@ -10,79 +10,91 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import Input, layers, initializers, Layer, Model, Sequential
 from typing import Optional, List
-import ModelConfig as hparams
 import inspect
 
 # MAIN MODEL
 class Enformer(Model):
-    def __init__(self, config=hparams._config()):
-        super(Enformer, self).__init__()
+    def __init__(self, 
+                channels: int = 1536,
+                num_convolution_layers: int = 6,
+                num_transformer_layers: int = 11,
+                num_heads: int = 8,
+                heads_channels = {'human': 5313, 'mouse': 1643},
+                sequence_length = 196608,
+                target_length = 896,
+                dropout_rate = 0.4,
+                pooling_type: str = 'attention',
+                to_freeze: Optional[List] = None,
+                name: str = 'enformer'):
+        super(Enformer, self).__init__(name = name, **kwargs)
 
-        self._seq_len = config.seq_len
-        self._encoding_in = config.encoding_in
-        self._dim = config.dim
-        # filter size=15 for stem module
-        self._stem_kernel = config.stem_kernel
-        # type of pooling ['attention', 'max']
-        self._pooling_type = config.pooling_type
-        # filter size=2 for pooling, strides=2
-        self._pool_size = config.pool_size
+        self._channels = channels
+        self._num_convolution_layers = num_convolution_layers   # if not 6, changes bin size -> need to make more changes
+        self._num_transformer_layers = num_transformer_layers 
+        self._heads_channels = heads_channels
+        self._sequence_length = sequence_length
+        self._target_length = target_length                     # target length, in (2**(num_convolution_layers+1)) bp bins (default 896 bins of 128bp)
+        self._dropout_rate = dropout_rate
+        self._pooling_type = pooling_type                       # one of ['attention', 'max']
+        self._to_freeze = to_freeze
+        
+
+        # Variables that are hardcoded for now
+        self._num_nucleotides = 4
+        self._stem_kernel = 15  # filter size=15 for stem module
+        self._pool_size = 2     # filter size=2 for pooling, strides=2
 
         # Attention parameters       
         attention_params = {
             # number of features of query/key matrix
             "query_dim": 64,
             # number of features of the value matrix
-            "value_dim": 192,
+            "value_dim": self._channels // self._num_heads,
             # number of heads
-            "num_heads": 8,
+            "num_heads": num_heads,
             "scaling": True,
             # attention dropout rate
-            'attn_dropout_rate':0.05,
+            'attn_dropout_rate': 0.05,
             # positional encoding dropout rate
-            'pos_dropout_rate':0.01,
+            'pos_dropout_rate': 0.01,
             # calculate positional encoding
-            'pos_encoding':True,
+            'pos_encoding': True,
             # calculate positional features only symmetric relative to position 0
-            "symmetric_pos_encoding":False,
+            "symmetric_pos_encoding": False,
             # positional encoding functions to be used
             # ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma']
             # ['pos_feats_cosine', 'pos_feats_linear_masks', 'pos_feats_sin_cos']
-            "pos_encoding_funs":None,
+            "pos_encoding_funs": None,
             # number of positional encoding features
             # min 6 for default relative_position_functions
             # min 12 for positional_features_sin_cos
-            "num_pos_feats" : 192,
+            "num_pos_feats": self._channels // self._num_heads,
             # zero initialize
-            "zero_init" : True,
-            "initializer" : None}
+            "zero_init": True,
+            "initializer": None}
         
         # STEM
-        self.stem = Sequential([Input(shape=(self._seq_len, self._encoding_in)),
-                                layers.Conv1D(filters=config.dim//2,
-                                               kernel_size=config.stem_kernel,
+        self.stem = Sequential([Input(shape=(self._sequence_length, self._num_nucleotides)),
+                                layers.Conv1D(filters=self._channels//2,
+                                               kernel_size=self._stem_kernel,
                                                padding='same',
                                                trainable=True,
                                                name='conv1'),
-                                 Residual(ConvBlock(filters=config.dim//2,
+                                 Residual(ConvBlock(filters=self._channels//2,
                                                     kernel_size=1)),
-                                 pooling(pooling_type=config.pooling_type,
-                                         pool_size=config.pool_size)],
+                                 pooling(pooling_type=self._pooling_type,
+                                         pool_size=self._pool_size)],
                                 name='stem')
         
         # CONVOLUTIONAL TOWER (CONVOLUTIONAL MODULE x 6)
-        # number of convolutional modules
-        self._depth1 = config.depth1
         # num features: 768 -> 896 -> 1024 -> 1152 -> 1280 -> 1536
         # create a list with exponentially increasing number of filters
         # [768, 896, 1024, 1152, 1280, 1536]
-        self._filters_list = exp_linspace_int(start=self._dim//2,
-                                                    end=self._dim,
+        self._filters_list = exp_linspace_int(start=self._channels//2,
+                                                    end=self._channels,
                                                     # 6 convolutional modules
-                                                    num_modules=self._depth1,
+                                                    num_modules=self._num_convolution_layers,
                                                     divisible_by=128)
-        # filter size=5 for convolutional modules
-        self._conv_kernel = config.conv_kernel
         # list of convolutional modules in tower
         self.tower_modules = [Sequential([ConvBlock(filters=filters,
                                                     kernel_size=self._conv_kernel),
@@ -93,45 +105,40 @@ class Enformer(Model):
                                          name=f'convolution_{i+1}') for i, filters in enumerate(self._filters_list)]
 
         # TRANSFORMER TOWER (TRANSFORMER MODULE x 11)
-        # number of transformer modules
-        self._depth2 = config.depth2
-        # dropout rate
-        self._dropout_rate = config.dropout_rate
         # list of transformer modules        
-        self.transformer_modules = [Sequential([Input(shape=(self._dim, self._dim)),
+        self.transformer_modules = [Sequential([Input(shape=(self._channels, self._channels)),
                                                 Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
-                                                Residual(FeedForward(channels = self._dim, dropout_rate = self._dropout_rate), name = 'res2')],
-                                               name=f'transformer_{j+1}') for j in range(self._depth2)]
+                                                Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')],
+                                               name=f'transformer_{j+1}') for j in range(self._num_transformer_layers)]
         
         # POINTWISE FFN MODULE
-        self._target_len = config.target_len
-        self.ffn = Sequential([Input(shape=(self._dim, self._dim)),
-                               tf.keras.layers.Cropping1D(320),
+        self._crop_length = (self._sequence_length/(2**(num_convolution_layers + 1))-self._target_length)//2
+        self.ffn = Sequential([Input(shape=(self._channels, self._channels)),
+                               tf.keras.layers.Cropping1D(self._crop_length),
                                # pointwise convolutional 1D
-                               ConvBlock(filters=self._dim*2, kernel_size=1, padding='same'),
+                               ConvBlock(filters=self._channels*2, kernel_size=1, padding='same'),
                                # tf.keras.layers.Dropout(rate, noise_shape=None, seed=None, **kwargs)
                                layers.Dropout(self._dropout_rate//8),
                                layers.Activation('gelu')], name='ffn')
 
         # HEADS
         # create final heads for human and mouse
-        self._sp_heads = config.sp_heads
         # first arg of map_values is a fun, second arg is a dict with data
         # the method uses the first part of the dict as key and pass the second (value) to the fun
         # lambda (fun) uses its 'features' argument (value) as argument of Dense() inside Sequential
-        self._heads = map_values(lambda features, name: Sequential([Input(shape=(self._target_len, self._dim*2)),
-                                                                          layers.Dense(features, activation='softplus')], name=name), self._sp_heads)
+        # TODO: REPLACE BY OWN HEAD CONSTRUCTOR DICT COMPREHENSION? OR JUST LOOP OR SOMETHING AUTOGRAD-COMPAT - BUT WE ALWAYS NEED TO LOOP OVER
+        self.heads = map_values(lambda features, name: Sequential([Input(shape=(self._target_length, self._channels*2)),
+                                                                          layers.Dense(features, activation='softplus')], name=name), self._heads_channels)
         
         # list of modules in the final model
         self.modules = dict(stem=self.stem,
                             conv_tower=self.tower_modules,
                             transformer_tower=self.transformer_modules,
                             ffn_module=self.ffn,
-                            heads=self._heads)
+                            heads=self.heads)
         # list of modules to be frozen
-        self.to_freeze = config.to_freeze
-        if exists(self.to_freeze):
-            self.freeze_module(self.to_freeze)
+        if exists(self._to_freeze):
+            self.freeze_module(self._to_freeze)
 
     # freeze modules at build time
     def freeze_module(self, to_freeze):
@@ -144,11 +151,11 @@ class Enformer(Model):
         stem_out = self.stem(inputs)
         # apply convolutional tower
         embeddings = stem_out
-        for i in range(self._depth1):
+        for i in range(len(self.tower_modules)):
             embeddings = self.tower_modules[i](embeddings, training=training)
         # apply transformer tower
         attentions = embeddings
-        for j in range(self._depth2):
+        for j in range(len(self.transformer_modules)):
             attentions = self.transformer_modules[j](attentions, training=training)
         # apply ffn
         ffn_in = attentions
@@ -157,7 +164,7 @@ class Enformer(Model):
         # first arg of map_values is a fun, second arg is a dict with data
         # the method uses the first part of the dict as key and pass the second (value) to the fun
         # lambda (fun) uses its 'fun' argument (value) as function on external inputs (trunk_embeddings)
-        out = map_values(lambda fun, key: fun(ffn_out), self._heads)
+        out = map_values(lambda fun, key: fun(ffn_out), self.heads)
         
         return out
 
