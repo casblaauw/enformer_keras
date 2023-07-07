@@ -276,12 +276,12 @@ class ConvBlock(Layer):
 # MULTI-HEAD SELF-ATTENTION LAYER
 class MHSelfAttention(Layer):
     def __init__(self, config=hparams._config(), name: str = 'mhsa', **kwargs):
-        super(MHSelfAttention, self).__init__(name = name, **kwargs)
         """Creates a MultiheadAttention module.
 
         Args:
         name: Name of module.
         """
+        super(MHSelfAttention, self).__init__(name = name, **kwargs)
 
         # Save parameters
         self._QK_dim = config.query_dim # number of features of query/key matrix
