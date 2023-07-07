@@ -112,7 +112,7 @@ class Enformer(Model):
                                                name=f'transformer_{j+1}') for j in range(self._num_transformer_layers)]
         
         # POINTWISE FFN MODULE
-        self._crop_length = (self._sequence_length/(2**(num_convolution_layers + 1))-self._target_length)//2
+        self._crop_length = (self._sequence_length/(2**(self._num_convolution_layers + 1))-self._target_length)//2
         self.ffn = Sequential([Input(shape=(self._channels, self._channels)),
                                tf.keras.layers.Cropping1D(self._crop_length),
                                # pointwise convolutional 1D
