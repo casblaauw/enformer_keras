@@ -59,15 +59,15 @@ class Enformer(Model):
         
         # STEM
         self.stem = Sequential([Input(shape=(self._seq_len, self._encoding_in)),
-                                layers.Conv1D(filters=config.dim//2,
-                                               kernel_size=config.stem_kernel,
+                                layers.Conv1D(filters=self._dim//2,
+                                               kernel_size=self._stem_kernel,
                                                padding='same',
                                                trainable=True,
                                                name='conv1'),
-                                 Residual(ConvBlock(filters=config.dim//2,
+                                 Residual(ConvBlock(filters=self._dim//2,
                                                     kernel_size=1)),
-                                 pooling(pooling_type=config.pooling_type,
-                                         pool_size=config.pool_size)],
+                                 pooling(pooling_type=self._pooling_type,
+                                         pool_size=self._pool_size)],
                                 name='stem')
         
         # CONVOLUTIONAL TOWER (CONVOLUTIONAL MODULE x 6)
@@ -105,8 +105,9 @@ class Enformer(Model):
         
         # POINTWISE FFN MODULE
         self._target_len = config.target_len
+        self._crop_length = (self._seq_len/(2**(self._depth1 + 1))-self._target_len)//2
         self.ffn = Sequential([Input(shape=(self._dim, self._dim)),
-                               tf.keras.layers.Cropping1D(320),
+                               tf.keras.layers.Cropping1D(self._crop_length),
                                # pointwise convolutional 1D
                                ConvBlock(filters=self._dim*2, kernel_size=1, padding='same'),
                                # tf.keras.layers.Dropout(rate, noise_shape=None, seed=None, **kwargs)
@@ -129,9 +130,9 @@ class Enformer(Model):
                             ffn_module=self.ffn,
                             heads=self._heads)
         # list of modules to be frozen
-        self.to_freeze = config.to_freeze
-        if exists(self.to_freeze):
-            self.freeze_module(self.to_freeze)
+        self._to_freeze = config.to_freeze
+        if exists(self._to_freeze):
+            self.freeze_module(self._to_freeze)
 
     # freeze modules at build time
     def freeze_module(self, to_freeze):
