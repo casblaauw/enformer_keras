@@ -222,7 +222,7 @@ class AttentionPooling1D(tf.keras.layers.Layer):
     
     
 # pooling method
-def pooling(dims, pooling_type, pool_size, training=False):
+def pooling(pooling_type, pool_size, training=False):
     if pooling_type=='attention':
         # apply attention pooling
         # filter size = stride in pooling layers
