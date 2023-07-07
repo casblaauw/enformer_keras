@@ -9,6 +9,7 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import Input, layers, initializers, Layer, Model, Sequential
+from typing import Optional, List
 import ModelConfig as hparams
 import inspect
 
@@ -181,20 +182,15 @@ class AttentionPooling1D(tf.keras.layers.Layer):
         name: Module name.
         """
         super().__init__(name = name, **kwargs)
-        self.pool_size = pool_size
+        self._pool_size = pool_size
         self._per_channel = per_channel
         self._w_init_scale = w_init_scale
-        
-        # need for pooling layer
-        self.strides = self.pool_size 
-        self.padding = "valid" # here we are using padding of 2 on multiples of 2 so it's ok
-        self.data_format = "channels_last"
 
     def build(self, inputs_shape):
         # Construct learnable layer part
         # Put in build to have access to inputs_shape automatically
         num_features = inputs_shape[-1]
-        self._logit_linear = tf.keras.layers.Dense(
+        self.logit_linear = tf.keras.layers.Dense(
             units=num_features if self._per_channel else 1,
             use_bias=False,  # Softmax is agnostic to shifts.
             kernel_initializer=tf.keras.initializers.Identity(self._w_init_scale))    
@@ -202,12 +198,9 @@ class AttentionPooling1D(tf.keras.layers.Layer):
     def get_config(self):
         config = super().get_config()
         config.update({
-            "pool_size": self.pool_size,
+            "pool_size": self._pool_size,
             "per_channel": self._per_channel,
-            "w_init_scale": self._w_init_scale,
-            "data_format": self.data_format,
-            "strides": self.strides,
-            "padding": self.padding
+            "w_init_scale": self._w_init_scale
         })
         return config
     
@@ -220,9 +213,9 @@ class AttentionPooling1D(tf.keras.layers.Layer):
             
         inputs = tf.reshape(
             inputs,
-            (-1, length // self.pool_size, self.pool_size, num_features))
+            (-1, length // self._pool_size, self._pool_size, num_features))
         return tf.reduce_sum(
-            inputs * tf.nn.softmax(self._logit_linear(inputs), axis=-2),
+            inputs * tf.nn.softmax(self.logit_linear(inputs), axis=-2),
             axis=-2)
         # return tf.reduce_sum(
         #     inputs * tf.nn.softmax(tf.matmul(inputs, self.w), axis=-2),
@@ -263,16 +256,16 @@ class Residual(Layer):
 class ConvBlock(Layer):
     def __init__(self, filters, kernel_size: int = 1, name = 'ConvBlock', **kwargs):
         super().__init__(name=name, **kwargs)
-        self.filters = filters
-        self.kernel_size = kernel_size
+        self._filters = filters
+        self._kernel_size = kernel_size
         self.batchnorm = layers.BatchNormalization(momentum = 0.1, epsilon = 1e-05, name = 'batch')
         self.gelu = layers.Activation('gelu')
-        self.conv = layers.Conv1D(filters=self._filters, kernel_size=self._kernel, padding='same', name='conv')
+        self.conv = layers.Conv1D(filters = self._filters, kernel_size = self._kernel_size, padding = 'same', name = 'conv')
     
     def get_config(self):
         config = super().get_config()
-        config.update({"filters": self.filters,
-                      "kernel_size": self.kernel_size})
+        config.update({"filters": self._filters,
+                      "kernel_size": self._kernel_size})
         return config
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
@@ -287,7 +280,8 @@ class MHABlock(Layer):
         then combined with a Residual FeedForward block to become a Transformer.
         """
         super().__init__(name=name, **kwargs)
-        self.dropout_rate = dropout_rate
+        self._attention_kwargs = attention_kwargs
+        self._dropout_rate = dropout_rate
 
         self.mha_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm1')
         self.mha = MHSelfAttention(**attention_kwargs)
@@ -295,32 +289,33 @@ class MHABlock(Layer):
 
     def get_config(self):
         config = super().get_config()
-        config.update({"dropout_rate": self.dropout_rate})
+        config.update({"attention_kwargs": self._attention_kwargs,
+                       "dropout_rate": self._dropout_rate})
         return config
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
         x = self.mha_ln(inputs)
-        x = self.mha(x, training=training)
-        return self.mha_dropout(x, training=training)
+        x = self.mha(x, training = training)
+        return self.mha_dropout(x, training = training)
 
 class FeedForward(Layer):
     def __init__(self, channels, dropout_rate, name = 'FeedForward', **kwargs):
         """FeedForward block, for use in a Residual layer,
          after a Residual MHABlock, which together becomes a Transformer."""
         super().__init__(name=name, **kwargs)
-        self.channels = channels
-        self.dropout_rate = dropout_rate
+        self._channels = channels
+        self._dropout_rate = dropout_rate
 
-        self.mlp_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm2')
-        self.mlp_linear1 = layers.Dense(units=channels*2, name='ffn1')
-        self.mlp_dropout1 = layers.Dropout(rate=dropout_rate)
-        self.mlp_linear2 = layers.Dense(units=channels, name='ffn2')
-        self.mlp_dropout2 = layers.Dropout(rate=dropout_rate)
+        self.mlp_ln = layers.LayerNormalization(epsilon = 1e-05, name = 'lnorm2')
+        self.mlp_linear1 = layers.Dense(units = channels*2, name = 'ffn1')
+        self.mlp_dropout1 = layers.Dropout(rate = dropout_rate)
+        self.mlp_linear2 = layers.Dense(units = channels, name = 'ffn2')
+        self.mlp_dropout2 = layers.Dropout(rate = dropout_rate)
 
     def get_config(self):
         config = super().get_config()
-        config.update({"channels": self.channels,
-                       "dropout_rate": self.dropout_rate})
+        config.update({"channels": self._channels,
+                       "dropout_rate": self._dropout_rate})
         return config
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
