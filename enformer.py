@@ -67,28 +67,10 @@ class Enformer(Model):
         self._depth2 = config.depth2
         # dropout rate
         self._dropout_rate = config.dropout_rate
-        # list of transformer modules
+        # list of transformer modules        
         self.transformer_modules = [Sequential([Input(shape=(self._dim, self._dim)),
-                                                Residual(Sequential([Input(shape=(self._dim, self._dim)),
-                                                                     # LayerNormalization(axis=-1, epsilon=0.001, center=True, scale=True,
-                                                                     # beta_initializer="zeros", gamma_initializer="ones", beta_regularizer=None,
-                                                                     # gamma_regularizer=None, beta_constraint=None, gamma_constraint=None, **kwargs)
-                                                                     layers.LayerNormalization(epsilon=1e-05, name='lnorm1'),
-                                                                     MHSelfAttention(),
-                                                                     # tf.keras.layers.Dropout(rate, noise_shape=None, seed=None, **kwargs)
-                                                                     layers.Dropout(rate=self._dropout_rate)]),
-                                                         name='res1'),
-                                                Residual(Sequential([Input(shape=(self._dim, self._dim)),
-                                                                     layers.LayerNormalization(epsilon=1e-05, name='lnorm2'),
-                                                                     # Dense(units, activation=None, use_bias=True, kernel_initializer="glorot_uniform",
-                                                                     # bias_initializer="zeros", kernel_regularizer=None, bias_regularizer=None,
-                                                                     # activity_regularizer=None, kernel_constraint=None, bias_constraint=None, **kwargs)
-                                                                     layers.Dense(units=self._dim*2, name='ffn1'),
-                                                                     layers.Dropout(rate=self._dropout_rate),
-                                                                     layers.ReLU(),
-                                                                     layers.Dense(units=self._dim, name='ffn2'),
-                                                                     layers.Dropout(rate=self._dropout_rate)]),
-                                                         name='res2')],
+                                                Residual(MHABlock(dropout_rate = self._dropout_rate), name='res1'),
+                                                Residual(FeedForward(channels = self._dim, dropout_rate = self._dropout_rate), name = 'res2')],
                                                name=f'transformer_{j+1}') for j in range(self._depth2)]
         
         # POINTWISE FFN MODULE
@@ -248,7 +230,7 @@ class Residual(Layer):
         return config
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
-        x = self.module(inputs)
+        x = self.module(inputs, training = training)
         return layers.Add()([x, inputs])
 
 # CONVOLUTIONAL BLOCK
@@ -268,9 +250,48 @@ class ConvBlock(Layer):
         return config
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
-        x = self.batchnorm(inputs)
+        x = self.batchnorm(inputs, training = training)
         x = self.gelu(x)
         return self.conv(x)
+
+# TRANSFORMER BLOCK COMPONENTS
+class MHABlock(Layer):
+    def __init__(self, dropout_rate, name = 'MHABlock', **kwargs):
+        """Multi-head attention block, for use in a Residual layer, 
+        then combined with a Residual FeedForward block to become a Transformer.
+        """
+        super().__init__(name=name, **kwargs)
+        self.mha_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm1')
+        self.mha = MHSelfAttention()
+        self.mha_dropout = layers.Dropout(rate=dropout_rate)
+
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = self.mha_ln(inputs)
+        x = self.mha(x, training=training)
+        return self.mha_dropout(x, training=training)
+
+class FeedForward(Layer):
+    def __init__(self, channels, dropout_rate, name = 'FeedForward', **kwargs):
+        """FeedForward block, for use in a Residual layer,
+         after a Residual MHABlock, which together becomes a Transformer."""
+        super().__init__(name=name, **kwargs)
+        self.mlp_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm2')
+        self.mlp_linear1 = layers.Dense(units=channels*2, name='ffn1')
+        self.mlp_dropout1 = layers.Dropout(rate=dropout_rate)
+        self.mlp_linear2 = layers.Dense(units=channels, name='ffn2')
+        self.mlp_dropout2 = layers.Dropout(rate=dropout_rate)
+
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = self.mlp_ln(inputs)
+        x = self.mlp_linear1(x)
+        if training:
+            x = self.mlp_dropout1(x)
+        x = tf.nn.relu(x)
+        x = self.mlp_linear2(x)
+        if training:
+            return self.mlp_dropout2(x)
+        else:
+            return x
 
 
 # MULTI-HEAD SELF-ATTENTION LAYER
