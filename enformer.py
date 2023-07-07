@@ -26,6 +26,35 @@ class Enformer(Model):
         self._pooling_type = config.pooling_type
         # filter size=2 for pooling, strides=2
         self._pool_size = config.pool_size
+
+        # Attention parameters       
+        attention_params = {
+            # number of features of query/key matrix
+            "query_dim": 64,
+            # number of features of the value matrix
+            "value_dim": 192,
+            # number of heads
+            "num_heads": 8,
+            "scaling": True,
+            # attention dropout rate
+            'attn_dropout_rate':0.05,
+            # positional encoding dropout rate
+            'pos_dropout_rate':0.01,
+            # calculate positional encoding
+            'pos_encoding':True,
+            # calculate positional features only symmetric relative to position 0
+            "symmetric_pos_encoding":False,
+            # positional encoding functions to be used
+            # ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma']
+            # ['pos_feats_cosine', 'pos_feats_linear_masks', 'pos_feats_sin_cos']
+            "pos_encoding_funs":None,
+            # number of positional encoding features
+            # min 6 for default relative_position_functions
+            # min 12 for positional_features_sin_cos
+            "num_pos_feats" : 192,
+            # zero initialize
+            "zero_init" : True,
+            "initializer" : None}
         
         # STEM
         self.stem = Sequential([Input(shape=(self._seq_len, self._encoding_in)),
@@ -69,7 +98,7 @@ class Enformer(Model):
         self._dropout_rate = config.dropout_rate
         # list of transformer modules        
         self.transformer_modules = [Sequential([Input(shape=(self._dim, self._dim)),
-                                                Residual(MHABlock(dropout_rate = self._dropout_rate), name='res1'),
+                                                Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
                                                 Residual(FeedForward(channels = self._dim, dropout_rate = self._dropout_rate), name = 'res2')],
                                                name=f'transformer_{j+1}') for j in range(self._depth2)]
         
@@ -253,7 +282,7 @@ class ConvBlock(Layer):
 
 # TRANSFORMER BLOCK COMPONENTS
 class MHABlock(Layer):
-    def __init__(self, dropout_rate, name = 'MHABlock', **kwargs):
+    def __init__(self, attention_kwargs, dropout_rate, name = 'MHABlock', **kwargs):
         """Multi-head attention block, for use in a Residual layer, 
         then combined with a Residual FeedForward block to become a Transformer.
         """
@@ -261,7 +290,7 @@ class MHABlock(Layer):
         self.dropout_rate = dropout_rate
 
         self.mha_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm1')
-        self.mha = MHSelfAttention()
+        self.mha = MHSelfAttention(**attention_kwargs)
         self.mha_dropout = layers.Dropout(rate=dropout_rate)
 
     def get_config(self):
@@ -309,7 +338,21 @@ class FeedForward(Layer):
 
 # MULTI-HEAD SELF-ATTENTION LAYER
 class MHSelfAttention(Layer):
-    def __init__(self, config=hparams._config(), name: str = 'mhsa', **kwargs):
+    def __init__(self, 
+                 query_dim: int, 
+                 value_dim: int, 
+                 num_heads: int, 
+                 scaling: bool = True, 
+                 attn_dropout_rate: float = 0.1, 
+                 pos_dropout_rate: float = 0.1, 
+                 pos_encoding: bool = False, 
+                 symmetric_pos_encoding: bool = False, 
+                 pos_encoding_funs: Optional[List[str]] = None, 
+                 num_pos_feats: Optional[int] = None, 
+                 zero_init: bool = True, 
+                 initializer: Optional[tf.keras.initializers.Initializer] = None, 
+                 name: str = 'mhsa', 
+                 **kwargs):
         """Creates a MultiheadAttention module.
 
         Args:
@@ -318,25 +361,26 @@ class MHSelfAttention(Layer):
         super(MHSelfAttention, self).__init__(name = name, **kwargs)
 
         # Save parameters
-        self._QK_dim = config.query_dim # number of features of query/key matrix
-        self._V_dim = config.value_dim  # number of features of the value matrix
-        self._heads = config.heads      # number of heads
-        self._attn_dropout = config.attn_dropout
-        self._pos_dropout = config.pos_dropout
-        self._scaling = config.scaling
-        self._pos_encoding = config.pos_encoding
-        self._symmetric_pos_encoding = config.symmetric_pos_encoding
-        self._pos_encoding_funs = config.pos_encoding_funs
-        pos_feats = config.pos_feats
-        zero_init = config.zero_init
-        initializer = config.initializer
-        if pos_feats is None:
-            # num_relative_position_features needs to be divisible by the number of
+        self._QK_dim = query_dim    # number of features of query/key matrix
+        self._V_dim = value_dim     # number of features of the value matrix
+        self._num_heads = num_heads # number of heads
+        self._scaling = scaling
+        self._attn_dropout = attn_dropout_rate
+        self._pos_dropout = pos_dropout_rate
+        self._pos_encoding = pos_encoding
+        self._symmetric_pos_encoding = symmetric_pos_encoding
+        self._pos_encoding_funs = pos_encoding_funs
+        self._num_pos_feats = num_pos_feats
+        self._zero_init = zero_init
+        self._initializer = initializer
+
+        if num_pos_feats is None:
+            # pos_feats needs to be divisible by the number of
             # relative positional functions*2 (for symmetric & asymmetric version)
             divisible_by = 2*len(self._pos_encoding_funs)
-            self._pos_feats = ((self._V_dim//divisible_by)*divisible_by)
+            self._num_pos_feats = ((self._V_dim//divisible_by)*divisible_by)
         else:
-            self._pos_feats = pos_feats
+            self._num_pos_feats = num_pos_feats
         
         if initializer is None:
             # VarianceScaling(scale=1.0, mode="fan_in", distribution="truncated_normal", seed=None)
@@ -345,10 +389,10 @@ class MHSelfAttention(Layer):
             self._initializer = initializer
         # number of features of the query/key matrix (_QK_size) multi-head projected (*_num_heads)
         # H*Q/K==512
-        self.QK_proj_dim = self._QK_dim*self._heads
+        self.QK_proj_dim = self._QK_dim*self._num_heads
         # number of features of the value matrix (_V_size) multi-head projected (*_num_heads)
         # H*V==1536
-        self.V_proj_dim = self._V_dim*self._heads
+        self.V_proj_dim = self._V_dim*self._num_heads
         
         # query calculation layer
         # output shape:[T, H*Q/K]
@@ -389,15 +433,30 @@ class MHSelfAttention(Layer):
             # dtype=None, import_scope=None, constraint=None, synchronization=tf.VariableSynchronization.AUTO,
             # aggregation=tf.compat.v1.VariableAggregation.NONE, shape=None, experimental_enable_variable_lifting=True)
             # shape:[1, 8, 1, 64]
-            self._r_w_bias = tf.Variable(self._initializer([1, self._heads, 1, self._QK_dim],
+            self._r_w_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
                                                            dtype=tf.float32),
                                          name='r_w_bias')
             # shape:[1, 8, 1, 64]
-            self._r_r_bias = tf.Variable(self._initializer([1, self._heads, 1, self._QK_dim],
+            self._r_r_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
                                                            dtype=tf.float32),
                                          name='r_r_bias')
     
-
+    def get_config(self):
+        config = super().get_config()
+        config.update({"query_dim": self._QK_dim,
+                       "value_dim": self._V_dim,
+                       "num_heads": self._num_heads,
+                       "scaling": self._scaling,
+                       "attn_dropout_rate": self._attn_dropout,
+                       "pos_dropout_rate": self._pos_dropout,
+                       "pos_encoding": self._pos_encoding,
+                       "symmetric_pos_encoding": self._symmetric_pos_encoding,
+                       "pos_necoding_funs": self._pos_encoding_funs,
+                       "num_pos_feats": self._num_pos_feats,
+                       "zero_init": self._zero_init,
+                       "initializer": self._initializer})
+        return config
+    
     def _multihead_output(self, layer, inputs):
         """Applies a standard linear to inputs and returns multihead output."""
         self._layer = layer
@@ -409,11 +468,11 @@ class MHSelfAttention(Layer):
         seq_len = output.shape[-2]
         # number of features of the query/key matrix (_QK_dim) or value matrix (_V_dim)
         # Q/K or V      
-        QKV_dim = output.shape[-1]//self._heads
+        QKV_dim = output.shape[-1]//self._num_heads
         # split heads (H) * channels (H/Q or V) into separate axes
         # output shape:[B, T, H, Q/K or V]
         # tf.reshape(tensor, shape, name=None)
-        multihead_out = tf.reshape(output, shape=(-1, seq_len, self._heads, QKV_dim))
+        multihead_out = tf.reshape(output, shape=(-1, seq_len, self._num_heads, QKV_dim))
         
         # shape:[B, T, H, Q/K or V] -> shape:[B, H, T, Q/K or V]
         # B batch size, T sequence length, H _num_heads, *Q/K _key_size or V _value_size
@@ -441,7 +500,7 @@ class MHSelfAttention(Layer):
             # project positions to form relative keys (seq_len*2)
             distances = tf.range(-seq_len + 1, seq_len, dtype=tf.float32)[tf.newaxis]
             positional_encodings = pos_feats_all(positions=distances,
-                                                       feature_size=self._pos_feats,
+                                                       feature_size=self.num_pos_feats,
                                                        seq_length=seq_len,
                                                        feature_functions=self._pos_encoding_funs,
                                                        symmetric=self._symmetric_pos_encoding)
