@@ -104,6 +104,7 @@ class Enformer(Model):
         # list of convolutional modules in tower
         # Sequential of tower modules, each module is Sequential of ConvBlock+Res(ConvBlock)+pooling
         self.conv_tower = Sequential([
+            Input(shape = (self._sequence_length//2, self._channels//2)),
             Sequential([
                 ConvBlock(filters=filters, kernel_size=self._conv_kernel),
                 Residual(ConvBlock(filters=filters, kernel_size=1)),
@@ -114,6 +115,7 @@ class Enformer(Model):
         # TRANSFORMER TOWER (TRANSFORMER MODULE x 11)
         # Sequential of transformer modules, each module is Sequential of MHABlock+FeedForward        
         self.transformer_tower = Sequential([
+            Input(shape = (self._tower_out_length, self._channels)),
             Sequential(
                 [Input(shape=(self._channels, self._channels)),
                  Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
@@ -123,7 +125,7 @@ class Enformer(Model):
         
         # POINTWISE FFN MODULE        
         self.ffn = Sequential([
-                Input(shape=(self._channels, self._channels)),
+            Input(shape=(self._tower_out_length, self._channels)),
                 tf.keras.layers.Cropping1D(self._crop_length),
                 # pointwise convolutional 1D
                 ConvBlock(filters=self._channels*2, kernel_size=1, padding='same'),
