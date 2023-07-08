@@ -147,12 +147,14 @@ class Enformer(Model):
                             transformer_tower=self.transformer_tower,
                             ffn_module=self.ffn,
                             heads=self.heads)
-        # list of modules to be frozen
+       
+       # Freeze supplied modules
         if exists(self._to_freeze):
-            self.freeze_module(self._to_freeze)
+            self.freeze_module_init(self._to_freeze)
 
-    # freeze modules at build time
-    def freeze_module(self, to_freeze):
+
+    # Freeze modules at build time
+    def freeze_module_init(self, to_freeze):
         for key in to_freeze:
             value = self.modules[key]
             value.trainable = False
