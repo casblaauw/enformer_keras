@@ -10,7 +10,6 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import Input, layers, initializers, Layer, Model, Sequential
 from typing import Optional, List
-import inspect
 
 # MAIN MODEL
 class Enformer(Model):
@@ -44,6 +43,13 @@ class Enformer(Model):
         self._stem_kernel = 15  # filter size=15 for stem module
         self._pool_size = 2     # filter size=2 for pooling, strides=2
 
+        # Calculate derived parameters
+        # Tower output length: n of bins after convolution pooling.
+        #   every conv layer (and stem layer) halves length -> seq_len/binwidth = dimensionality
+        # Crop length: (original dimensionality - target_length) // 2 = crop length from both sides 
+        self._tower_out_length = self._sequence_length/(2**(self._num_convolution_layers + 1))
+        self._crop_length = (self._tower_out_length-self._target_length)//2
+
         # Attention parameters       
         attention_params = {
             # number of features of query/key matrix
@@ -74,66 +80,70 @@ class Enformer(Model):
             "initializer": None}
         
         # STEM
-        self.stem = Sequential([Input(shape=(self._sequence_length, self._num_nucleotides)),
-                                layers.Conv1D(filters=self._channels//2,
-                                               kernel_size=self._stem_kernel,
-                                               padding='same',
-                                               trainable=True,
-                                               name='conv1'),
-                                 Residual(ConvBlock(filters=self._channels//2,
-                                                    kernel_size=1)),
-                                 pooling(pooling_type=self._pooling_type,
-                                         pool_size=self._pool_size)],
-                                name='stem')
+        self.stem = Sequential([
+                Input(shape=(self._sequence_length, self._num_nucleotides)),
+                layers.Conv1D(filters=self._channels//2,
+                    kernel_size=self._stem_kernel,
+                    padding='same',
+                    trainable=True,
+                    name='conv1'),
+                Residual(ConvBlock(filters=self._channels//2, kernel_size=1)),
+                pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
+            ], name='stem')
         
         # CONVOLUTIONAL TOWER (CONVOLUTIONAL MODULE x 6)
         # num features: 768 -> 896 -> 1024 -> 1152 -> 1280 -> 1536
         # create a list with exponentially increasing number of filters
         # [768, 896, 1024, 1152, 1280, 1536]
         self._filters_list = exp_linspace_int(start=self._channels//2,
-                                                    end=self._channels,
-                                                    # 6 convolutional modules
-                                                    num_modules=self._num_convolution_layers,
-                                                    divisible_by=128)
+                                              end=self._channels,
+                                              # 6 convolutional modules
+                                              num_modules=self._num_convolution_layers,
+                                              divisible_by=128)
         # list of convolutional modules in tower
-        self.tower_modules = [Sequential([ConvBlock(filters=filters,
-                                                    kernel_size=self._conv_kernel),
-                                          Residual(ConvBlock(filters=filters,
-                                                             kernel_size=1)),
-                                          pooling(pooling_type=self._pooling_type,
-                                                  pool_size=self._pool_size)],
-                                         name=f'convolution_{i+1}') for i, filters in enumerate(self._filters_list)]
+        # Sequential of tower modules, each module is Sequential of ConvBlock+Res(ConvBlock)+pooling
+        self.conv_tower = Sequential([
+            Sequential([
+                ConvBlock(filters=filters, kernel_size=self._conv_kernel),
+                Residual(ConvBlock(filters=filters, kernel_size=1)),
+                pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
+                ], name=f'convolution_{i+1}'
+            ) for i, filters in enumerate(self._filters_list)], name = 'conv_tower')
 
         # TRANSFORMER TOWER (TRANSFORMER MODULE x 11)
-        # list of transformer modules        
-        self.transformer_modules = [Sequential([Input(shape=(self._channels, self._channels)),
-                                                Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
-                                                Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')],
-                                               name=f'transformer_{j+1}') for j in range(self._num_transformer_layers)]
+        # Sequential of transformer modules, each module is Sequential of MHABlock+FeedForward        
+        self.transformer_tower = Sequential([
+            Sequential(
+                [Input(shape=(self._channels, self._channels)),
+                 Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
+                 Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')
+                ], name=f'transformer_{j+1}'
+            ) for j in range(self._num_transformer_layers)], name = 'transformer_tower')
         
-        # POINTWISE FFN MODULE
-        self._crop_length = (self._sequence_length/(2**(self._num_convolution_layers + 1))-self._target_length)//2
-        self.ffn = Sequential([Input(shape=(self._channels, self._channels)),
-                               tf.keras.layers.Cropping1D(self._crop_length),
-                               # pointwise convolutional 1D
-                               ConvBlock(filters=self._channels*2, kernel_size=1, padding='same'),
-                               # tf.keras.layers.Dropout(rate, noise_shape=None, seed=None, **kwargs)
-                               layers.Dropout(self._dropout_rate//8),
-                               layers.Activation('gelu')], name='ffn')
+        # POINTWISE FFN MODULE        
+        self.ffn = Sequential([
+                Input(shape=(self._channels, self._channels)),
+                tf.keras.layers.Cropping1D(self._crop_length),
+                # pointwise convolutional 1D
+                ConvBlock(filters=self._channels*2, kernel_size=1, padding='same'),
+                layers.Dropout(self._dropout_rate//8),
+                layers.Activation('gelu')
+            ], name='ffn')
 
         # HEADS
         # create final heads for human and mouse
-        # first arg of map_values is a fun, second arg is a dict with data
-        # the method uses the first part of the dict as key and pass the second (value) to the fun
-        # lambda (fun) uses its 'features' argument (value) as argument of Dense() inside Sequential
-        # TODO: REPLACE BY OWN HEAD CONSTRUCTOR DICT COMPREHENSION? OR JUST LOOP OR SOMETHING AUTOGRAD-COMPAT - BUT WE ALWAYS NEED TO LOOP OVER
-        self.heads = map_values(lambda features, name: Sequential([Input(shape=(self._target_length, self._channels*2)),
-                                                                          layers.Dense(features, activation='softplus')], name=name), self._heads_channels)
+        self.heads = {
+            heads: layers.Dense(
+                channels, 
+                activation='softplus', 
+                input_shape = (self._target_length, self._channels*2)
+            ) for heads, channels in self._heads_channels.items()
+        }
         
         # list of modules in the final model
         self.modules = dict(stem=self.stem,
-                            conv_tower=self.tower_modules,
-                            transformer_tower=self.transformer_modules,
+                            conv_tower=self.conv_tower,
+                            transformer_tower=self.transformer_tower,
                             ffn_module=self.ffn,
                             heads=self.heads)
         # list of modules to be frozen
@@ -148,25 +158,15 @@ class Enformer(Model):
     
     def call(self, inputs, training=False):
         # apply stem module
-        stem_out = self.stem(inputs)
+        x = self.stem(inputs, training = training)
         # apply convolutional tower
-        embeddings = stem_out
-        for i in range(len(self.tower_modules)):
-            embeddings = self.tower_modules[i](embeddings, training=training)
+        x = self.conv_tower(x, training = training)
         # apply transformer tower
-        attentions = embeddings
-        for j in range(len(self.transformer_modules)):
-            attentions = self.transformer_modules[j](attentions, training=training)
+        x = self.transformer_tower(x, training = training)
         # apply ffn
-        ffn_in = attentions
-        ffn_out = self.ffn(ffn_in)
+        x = self.ffn(x, training = training)
         # apply heads layers on inputs
-        # first arg of map_values is a fun, second arg is a dict with data
-        # the method uses the first part of the dict as key and pass the second (value) to the fun
-        # lambda (fun) uses its 'fun' argument (value) as function on external inputs (trunk_embeddings)
-        out = map_values(lambda fun, key: fun(ffn_out), self.heads)
-        
-        return out
+        return {head_name: head(x) for head_name, head in self.heads.items()}
 
 # ATTENTION POOLING LAYER
 class AttentionPooling1D(tf.keras.layers.Layer):
@@ -244,7 +244,7 @@ def pooling(pooling_type, pool_size, training=False):
     else:
         raise ValueError(f'invalid pooling type: {pooling_type}')
 
-# RESIDUAL BLOCK
+# RESIDUAL WRAPPER
 class Residual(Layer):
     def __init__(self, module: layers.Layer, name: str = 'residual', **kwargs):
         super().__init__(name=name, **kwargs)
@@ -399,8 +399,6 @@ class MHSelfAttention(Layer):
         # query calculation layer
         # output shape:[T, H*Q/K]
         # T sequence length, H*Q/K key_proj_size
-        # Dense(units, activation=None, use_bias=True, kernel_initializer="glorot_uniform", bias_initializer="zeros", kernel_regularizer=None,
-        # bias_regularizer=None, activity_regularizer=None, kernel_constraint=None, bias_constraint=None, **kwargs)
         self._to_Q = layers.Dense(self.QK_proj_dim, # number of units
                                   name='to_Q',
                                   use_bias=False,
@@ -419,7 +417,6 @@ class MHSelfAttention(Layer):
                                   use_bias=False,
                                   kernel_initializer=self._initializer)
         # initiallizer for the embeddings
-        # tf.keras.initializers.Zeros()
         w_init = initializers.Zeros() if zero_init else self._initializer
         # embedding layer
         self._to_out = layers.Dense(self.V_proj_dim,
@@ -431,9 +428,6 @@ class MHSelfAttention(Layer):
                                           name='to_rel_K',
                                           use_bias=False,
                                           kernel_initializer=self._initializer)
-            # tf.Variable(initial_value=None, trainable=None, validate_shape=True, caching_device=None, name=None, variable_def=None,
-            # dtype=None, import_scope=None, constraint=None, synchronization=tf.VariableSynchronization.AUTO,
-            # aggregation=tf.compat.v1.VariableAggregation.NONE, shape=None, experimental_enable_variable_lifting=True)
             # shape:[1, 8, 1, 64]
             self._r_w_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
                                                            dtype=tf.float32),
@@ -473,12 +467,10 @@ class MHSelfAttention(Layer):
         QKV_dim = output.shape[-1]//self._num_heads
         # split heads (H) * channels (H/Q or V) into separate axes
         # output shape:[B, T, H, Q/K or V]
-        # tf.reshape(tensor, shape, name=None)
         multihead_out = tf.reshape(output, shape=(-1, seq_len, self._num_heads, QKV_dim))
         
         # shape:[B, T, H, Q/K or V] -> shape:[B, H, T, Q/K or V]
         # B batch size, T sequence length, H _num_heads, *Q/K _key_size or V _value_size
-        # tf.transpose(a, perm=None, conjugate=False, name='transpose')
         return tf.transpose(multihead_out, [0, 2, 1, 3])
     
     def call(self, inputs, training=False):
@@ -511,15 +503,12 @@ class MHSelfAttention(Layer):
             if training:
                 # F: feature_size
                 # positional_encodings.shape:[B, 2T-1, F] confirmed ([1, 3071, 6])
-                # tf.keras.layers.Dropout(rate, noise_shape=None, seed=None, **kwargs)
                 positional_encodings = layers.Dropout(rate=self._pos_dropout, name='pos_drop')(positional_encodings)
             
             # r_K.shape:[1, H, 2T-1, K] confirmed ([1, 8, 3071, 64])
             r_K = self._multihead_output(self._to_rel_K, positional_encodings)
             # add shifted relative logits to content logits
             # content_logits.shape:[B, H, T', T] confirmed ([1, 8, 1536, 1536])
-            # tf.linalg.matmul(a, b, transpose_a=False, transpose_b=False, adjoint_a=False, adjoint_b=False,
-            # a_is_sparse=False, b_is_sparse=False, output_type=None, name=None)
             # content_logits = tf.linalg.matmul(Q + self._r_w_bias, K, transpose_b=True)
             content_logits = tf.einsum('b h i d, b h j d -> b h i j', Q + self._r_w_bias, K)
             # relative_logits.shape:[B, H, T', 2T-1] confirmed shape:[1, 8, 1536, 3071]
@@ -535,12 +524,10 @@ class MHSelfAttention(Layer):
             # output shape:[B, H, T', T]
             logits = tf.linalg.matmul(Q, K, transpose_b=True)
         # apply softmax(q*kT) to calculate the ATTENTION WEIGHTS matrix
-        # tf.keras.layers.Softmax(axis=-1, **kwargs)
         weights = layers.Softmax()(logits)
         # attention DROPOUT
         if training:
             # apply dropout on the attention weights
-            # tf.keras.layers.Dropout(rate, noise_shape=None, seed=None, **kwargs)
             weights = layers.Dropout(rate=self._attn_dropout, name='attn_drop')(weights)
         # COMPUTE ATTENTION
         # transpose and reshape the output
@@ -548,11 +535,9 @@ class MHSelfAttention(Layer):
         attention = tf.linalg.matmul(weights, V)
         
         # final linear layer
-        # tf.transpose(a, perm=None, conjugate=False, name='transpose')
         # trans_out shape:[B, T', H, V] confirmed shape:[1, 1536, 8, 192]
         trans_out = tf.transpose(attention, [0, 2, 1, 3])
         # attended_embeds shape:(B, T', H*V] confirmed shape:[1, 1536, 1536]
-        # tf.reshape(tensor, shape, name=None)
         attended_embeds = tf.reshape(trans_out, shape=(-1, trans_out.shape[-3], self.V_proj_dim))
         output = self._to_out(attended_embeds)
         
@@ -563,14 +548,12 @@ class MHSelfAttention(Layer):
 def exists(val):
     return val is not None
 
-def default(val, d):
-    return val if exists(val) else d
-
-# first arg is a function, second arg is a dictionary with data
-def map_values(fun, data):
-    # use the first part of the dictionary as key and pass the second (value) to the function
-    # new: additionaly pass the key as second argument to the function in order to name the function
-    return {key: fun(value, key) for key, value in data.items()}
+# freeze modules after build
+def freeze_module(model, to_freeze):
+    model.trainable = True
+    if exists(to_freeze):
+        for key in to_freeze:
+            model.get_layer(key).trainable = False
 
 # exponentially increasing values of integers
 def exp_linspace_int(start, end, num_modules, divisible_by=1):
@@ -580,9 +563,6 @@ def exp_linspace_int(start, end, num_modules, divisible_by=1):
     base = np.exp(np.log(end/start)/(num_modules-1))
     
     return [_round(start*base**i) for i in range(num_modules)]
-
-def accepts_is_training(module):
-    return 'is_training' in list(inspect.signature(module.__call__).parameters)
 
 # functions for positional features
 # shift the relative logits like in TransformerXL
@@ -807,10 +787,3 @@ def pos_feats_sin_cos(positions: tf.Tensor,
     tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
     
     return outputs
-
-# freeze modules after build
-def freeze_module(model, to_freeze):
-    model.trainable = True
-    if exists(to_freeze):
-        for key in to_freeze:
-            model.get_layer(key).trainable = False
