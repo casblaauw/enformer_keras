@@ -24,7 +24,8 @@ class Enformer(Model):
                 dropout_rate = 0.4,
                 pooling_type: str = 'attention',
                 to_freeze: Optional[List] = None,
-                name: str = 'enformer'):
+                name: str = 'enformer',
+                **kwargs):
         super(Enformer, self).__init__(name = name, **kwargs)
 
         self._channels = channels
