@@ -42,7 +42,7 @@ class Enformer(Model):
         # Variables that are hardcoded for now
         self._num_nucleotides = 4
         self._stem_kernel = 15  # filter size=15 for stem module
-        self._pool_size = 2     # filter size=2 for pooling, strides=2
+        self._pool_size = 2     # filter size=2 for pooling, strides=2. WHEN CHANGING, ADJUST TOWER_OUT_LENGTH CALC
 
         # Calculate derived parameters
         # Tower output length: n of bins after convolution pooling.
@@ -71,7 +71,8 @@ class Enformer(Model):
             # positional encoding functions to be used
             # ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma']
             # ['pos_feats_cosine', 'pos_feats_linear_masks', 'pos_feats_sin_cos']
-            "pos_encoding_funs": None,
+            # Default is ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma']
+            "pos_encoding_funs": ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma'],
             # number of positional encoding features
             # min 6 for default relative_position_functions
             # min 12 for positional_features_sin_cos
@@ -81,16 +82,12 @@ class Enformer(Model):
             "initializer": None}
         
         # STEM
-        self.stem = Sequential([
-                Input(shape=(self._sequence_length, self._num_nucleotides)),
-                layers.Conv1D(filters=self._channels//2,
-                    kernel_size=self._stem_kernel,
-                    padding='same',
-                    trainable=True,
-                    name='conv1'),
-                Residual(ConvBlock(filters=self._channels//2, kernel_size=1)),
-                pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
-            ], name='stem')
+        self.stem = Sequential(
+            [Input(shape=(self._sequence_length, self._num_nucleotides)),
+             layers.Conv1D(filters=self._channels//2, kernel_size=self._stem_kernel, padding='same', name='stem_conv'),
+             Residual(ConvBlock(filters=self._channels//2, kernel_size=1, name = 'stem_pointwise')),
+             pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)],
+            name='stem')
         
         # CONVOLUTIONAL TOWER (CONVOLUTIONAL MODULE x 6)
         # num features: 768 -> 896 -> 1024 -> 1152 -> 1280 -> 1536
@@ -103,35 +100,36 @@ class Enformer(Model):
                                               divisible_by=128)
         # list of convolutional modules in tower
         # Sequential of tower modules, each module is Sequential of ConvBlock+Res(ConvBlock)+pooling
-        self.conv_tower = Sequential([
-            Input(shape = (self._sequence_length//2, self._channels//2)),
-            Sequential([
-                ConvBlock(filters=filters, kernel_size=self._conv_kernel),
-                Residual(ConvBlock(filters=filters, kernel_size=1)),
+        self.conv_tower = Sequential(
+            [Input(shape = (self._sequence_length//2, self._channels//2))] +
+            [Sequential([
+                ConvBlock(filters=filters, kernel_size=self._conv_kernel, name=f'tower_conv_{i+1}'),
+                Residual(ConvBlock(filters=filters, kernel_size=1, name=f'tower_pointwise_{i+1}')),
                 pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
-                ], name=f'convolution_{i+1}'
-            ) for i, filters in enumerate(self._filters_list)], name = 'conv_tower')
+                ], name=f'convolution_{i+1}') 
+            for i, filters in enumerate(self._filters_list)],
+            name = 'conv_tower')
 
         # TRANSFORMER TOWER (TRANSFORMER MODULE x 11)
         # Sequential of transformer modules, each module is Sequential of MHABlock+FeedForward        
-        self.transformer_tower = Sequential([
-            Input(shape = (self._tower_out_length, self._channels)),
-            Sequential(
-                [Input(shape=(self._channels, self._channels)),
-                 Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
-                 Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')
-                ], name=f'transformer_{j+1}'
-            ) for j in range(self._num_transformer_layers)], name = 'transformer_tower')
+        self.transformer_tower = Sequential(
+            [Input(shape = (self._tower_out_length, self._channels))] +
+            [Sequential(
+                [Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
+                Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')
+                ], name=f'transformer_{j+1}') 
+            for j in range(self._num_transformer_layers)],
+            name = 'transformer_tower')
         
         # POINTWISE FFN MODULE        
-        self.ffn = Sequential([
-            Input(shape=(self._tower_out_length, self._channels)),
-                tf.keras.layers.Cropping1D(self._crop_length),
-                # pointwise convolutional 1D
-                ConvBlock(filters=self._channels*2, kernel_size=1, padding='same'),
-                layers.Dropout(self._dropout_rate//8),
-                layers.Activation('gelu')
-            ], name='ffn')
+        self.ffn = Sequential(
+            [Input(shape=(self._tower_out_length, self._channels)),
+             tf.keras.layers.Cropping1D(self._crop_length),
+             # pointwise convolutional 1D
+             ConvBlock(filters=self._channels*2, kernel_size=1, padding='same'),
+             layers.Dropout(self._dropout_rate//8),
+             layers.Activation('gelu')], 
+            name='final_pointwise')
 
         # HEADS
         # create final heads for human and mouse
@@ -270,7 +268,7 @@ class ConvBlock(Layer):
         super().__init__(name=name, **kwargs)
         self._filters = filters
         self._kernel_size = kernel_size
-        self.batchnorm = layers.BatchNormalization(momentum = 0.1, epsilon = 1e-05, name = 'batch')
+        self.batchnorm = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05, name = 'batch')
         self.gelu = layers.Activation('gelu')
         self.conv = layers.Conv1D(filters = self._filters, kernel_size = self._kernel_size, padding = 'same', name = 'conv')
     
@@ -354,7 +352,7 @@ class MHSelfAttention(Layer):
                  pos_dropout_rate: float = 0.1, 
                  pos_encoding: bool = False, 
                  symmetric_pos_encoding: bool = False, 
-                 pos_encoding_funs: Optional[List[str]] = None, 
+                 pos_encoding_funs: List[str] = ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma'], 
                  num_pos_feats: Optional[int] = None, 
                  zero_init: bool = True, 
                  initializer: Optional[tf.keras.initializers.Initializer] = None, 
@@ -381,6 +379,11 @@ class MHSelfAttention(Layer):
         self._zero_init = zero_init
         self._initializer = initializer
 
+        # Use default functions if None is passed  
+        if self._pos_encoding_funs is None:
+            self._pos_encoding_funs = ['pos_feats_exponential',
+                                       'pos_feats_central_mask',
+                                       'pos_feats_gamma']
         if num_pos_feats is None:
             # pos_feats needs to be divisible by the number of
             # relative positional functions*2 (for symmetric & asymmetric version)
@@ -604,10 +607,12 @@ def pos_feats_all(positions: tf.Tensor,
                   # num_relative_position_features: total number of basis functions*n(int)
                   feature_size: int,
                   # length of the transformer input sequence (default 1536)
-                  seq_length: int=None,
-                  bin_size: int=None,
+                  seq_length: int = None,
+                  bin_size: int = None,
                   # relative_position_functions
-                  feature_functions: list=None,
+                  feature_functions: list = ['pos_feats_exponential',
+                                             'pos_feats_central_mask',
+                                             'pos_feats_gamma'],
                   symmetric=False):
     if feature_functions is None:
         # default relative_position_functions
