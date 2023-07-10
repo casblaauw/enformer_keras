@@ -239,9 +239,9 @@ def make_functional_enformer(channels: int = 1536,
     #         name='stem')
     
     x = layers.Conv1D(filters=channels//2, kernel_size=stem_kernel, padding='same', name='stem_conv')(inp)
-    y = PointwiseConvBlock(filters = channels//2, name = 'stem_conv')(x)
+    y = PointwiseConvBlock(filters = channels//2, name = 'stem_pointwise')(x)
     x = layers.Add()([x,y])
-    x = pooling(pooling_type=pooling_type, pool_size=pool_size)(x)
+    x = pooling(pooling_type=pooling_type, pool_size=pool_size, name = "stem_pool")(x)
 
     # self.conv_tower = Sequential(
     # [Input(shape = (self._sequence_length//2, self._channels//2))] +
@@ -258,7 +258,7 @@ def make_functional_enformer(channels: int = 1536,
         x = ConvBlock(filters = ci, kernel_size = conv_kernel, name = f'tower_conv_{ci+1}')(x)
         y = PointwiseConvBlock(filters = ci, name = f'tower_pointwise_{ci+1}')(x)
         x = layers.Add()([x,y])
-        x = pooling(pooling_type=pooling_type, pool_size = pool_size)(x)
+        x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{ci+1}")(x)
     
     # just an identity layer, using this as STOP_LAYER
     # there's an edge case that needs to be taken care of
@@ -382,17 +382,17 @@ class AttentionPooling1D(layers.Layer):
 
     
 # pooling method
-def pooling(pooling_type, pool_size, training=False):
+def pooling(pooling_type, pool_size, name = None, training=False):
     if pooling_type=='attention':
         # apply attention pooling
         # filter size = stride in pooling layers
         # filter size=2, stride=2
-        return AttentionPooling1D(pool_size = pool_size, per_channel = True, w_init_scale = 2.0)
+        return AttentionPooling1D(pool_size = pool_size, per_channel = True, w_init_scale = 2.0, name = name)
     elif pooling_type=='max':
         # apply max pooling
         # filter size = stride in pooling layers
         # filter=2, stride=2
-        return layers.MaxPool1D(pool_size = pool_size, padding = 'same', name = 'maxpool')
+        return layers.MaxPool1D(pool_size = pool_size, padding = 'same', name = name)
     else:
         raise ValueError(f'invalid pooling type: {pooling_type}')
 
