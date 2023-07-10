@@ -293,7 +293,9 @@ class MHABlock(Layer):
         self._attention_kwargs = attention_kwargs
         self._dropout_rate = dropout_rate
 
-        self.mha_ln = layers.LayerNormalization(epsilon=1e-05, name='lnorm1')
+        # No need to set scale initializer like in sonnet, already default 
+        self.mha_ln = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, 
+                                                beta_initializer = "zeros", gamma_initializer = "ones", name='lnorm1',)
         self.mha = MHSelfAttention(**attention_kwargs)
         self.mha_dropout = layers.Dropout(rate=dropout_rate)
 
@@ -316,7 +318,8 @@ class FeedForward(Layer):
         self._channels = channels
         self._dropout_rate = dropout_rate
 
-        self.mlp_ln = layers.LayerNormalization(epsilon = 1e-05, name = 'lnorm2')
+        self.mlp_ln = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, 
+                                                beta_initializer = "zeros", gamma_initializer = "ones", name = 'lnorm2')
         self.mlp_linear1 = layers.Dense(units = channels*2, name = 'ffn1')
         self.mlp_dropout1 = layers.Dropout(rate = dropout_rate)
         self.mlp_linear2 = layers.Dense(units = channels, name = 'ffn2')
