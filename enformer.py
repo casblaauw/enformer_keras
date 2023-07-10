@@ -8,7 +8,7 @@
 # imports
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import Input, layers, initializers, Layer, Model, Sequential
+from tensorflow.keras import Input, layers, initializers, Model, Sequential
 from typing import Optional, List
 
 # MAIN MODEL
@@ -172,7 +172,7 @@ class Enformer(Model):
         return {head_name: head(x) for head_name, head in self.heads.items()}
 
 # ATTENTION POOLING LAYER
-class AttentionPooling1D(tf.keras.layers.Layer):
+class AttentionPooling1D(layers.Layer):
     """Pooling operation with optional weights."""
     def __init__(self,
                 pool_size: int = 2,
@@ -248,7 +248,7 @@ def pooling(pooling_type, pool_size, training=False):
         raise ValueError(f'invalid pooling type: {pooling_type}')
 
 # RESIDUAL WRAPPER
-class Residual(Layer):
+class Residual(layers.Layer):
     def __init__(self, module: layers.Layer, name: str = 'residual', **kwargs):
         super().__init__(name=name, **kwargs)
         self.module = module
@@ -263,7 +263,7 @@ class Residual(Layer):
         return layers.Add()([x, inputs])
 
 # CONVOLUTIONAL BLOCK
-class ConvBlock(Layer):
+class ConvBlock(layers.Layer):
     def __init__(self, filters, kernel_size: int = 1, name = 'ConvBlock', **kwargs):
         super().__init__(name=name, **kwargs)
         self._filters = filters
@@ -284,7 +284,7 @@ class ConvBlock(Layer):
         return self.conv(x)
 
 # TRANSFORMER BLOCK COMPONENTS
-class MHABlock(Layer):
+class MHABlock(layers.Layer):
     def __init__(self, attention_kwargs, dropout_rate, name = 'MHABlock', **kwargs):
         """Multi-head attention block, for use in a Residual layer, 
         then combined with a Residual FeedForward block to become a Transformer.
@@ -310,7 +310,7 @@ class MHABlock(Layer):
         x = self.mha(x, training = training)
         return self.mha_dropout(x, training = training)
 
-class FeedForward(Layer):
+class FeedForward(layers.Layer):
     def __init__(self, channels, dropout_rate, name = 'FeedForward', **kwargs):
         """FeedForward block, for use in a Residual layer,
          after a Residual MHABlock, which together becomes a Transformer."""
@@ -345,7 +345,7 @@ class FeedForward(Layer):
 
 
 # MULTI-HEAD SELF-ATTENTION LAYER
-class MHSelfAttention(Layer):
+class MHSelfAttention(layers.Layer):
     def __init__(self, 
                  query_dim: int, 
                  value_dim: int, 
