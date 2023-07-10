@@ -255,8 +255,8 @@ def make_functional_enformer(channels: int = 1536,
 
     tower_chans = exp_linspace_int(start=channels//2, end=channels, num_modules=num_convolution_layers, divisible_by=128)
     for ci in tower_chans:
-        x = ConvBlock(filters = ci, kernel_size = conv_kernel, name = f'tower_conv_{i+1}')(x)
-        y = PointwiseConvBlock(filters = ci, name = f'tower_pointwise_{i+1}')(x)
+        x = ConvBlock(filters = ci, kernel_size = conv_kernel, name = f'tower_conv_{ci+1}')(x)
+        y = PointwiseConvBlock(filters = ci, name = f'tower_pointwise_{ci+1}')(x)
         x = layers.Add()([x,y])
         x = pooling(pooling_type=pooling_type, pool_size = pool_size)(x)
     
@@ -274,10 +274,10 @@ def make_functional_enformer(channels: int = 1536,
     #         for j in range(self._num_transformer_layers)],
     #         name = 'transformer_tower')
 
-    for i in range(num_transformer_layers):
-        y = MHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{i}')(x)
+    for ti in range(num_transformer_layers):
+        y = MHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{ti+1}')(x)
         x = layers.Add()([x,y])
-        y = FeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{i}')(x)
+        y = FeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{ti+1}')(x)
         x = layers.Add()([x,y])
 
     # self.ffn = Sequential(
