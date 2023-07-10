@@ -275,6 +275,9 @@ class AttentionPooling1D(layers.Layer):
                 pool_size: int = 2,
                 per_channel: bool = True,
                 w_init_scale: float = 2.0,
+                strides = None,
+                padding = None,
+                data_format = None,
                 name: str = "AttentionPooling",
                 **kwargs):
         """AttentionPool from the FastISM repository.
@@ -286,6 +289,8 @@ class AttentionPooling1D(layers.Layer):
         channels.
          w_init_scale: Initialisation of w. When 0.0 is equivalent to avg pooling, and when
         ~2.0 and `per_channel=False` it's equivalent to max pooling.  
+        strides/padding/data_format: placeholder arguments to capture them from from_config. 
+            Not used in setting up the layer.
         name: Module name.
         """
         super().__init__(name = name, **kwargs)
@@ -293,11 +298,10 @@ class AttentionPooling1D(layers.Layer):
         self._per_channel = per_channel
         self._w_init_scale = w_init_scale
 
-        # Needed for compatibility with FastISM
-        self.pool_size = pool_size
-        self.strides = self.pool_size
-        self.padding = "valid" # ensure it behaves like MaxPooling1D with valid padding
-        self.data_format = "channels_last"
+        # Needed for compatibility with FastISM, not actually used to configure
+        self._strides = self._pool_size
+        self._padding = "valid" # ensure it behaves like MaxPooling1D with valid padding
+        self._data_format = "channels_last"
 
     def build(self, inputs_shape):
         # Construct learnable layer part
@@ -313,7 +317,10 @@ class AttentionPooling1D(layers.Layer):
         config.update({
             "pool_size": self._pool_size,
             "per_channel": self._per_channel,
-            "w_init_scale": self._w_init_scale
+            "w_init_scale": self._w_init_scale,
+            "strides": self._strides,
+            "padding": self._padding,
+            "data_format": self._data_format
         })
         return config
     
@@ -399,6 +406,8 @@ class ResConvBlock(ConvBlock):
 # Separate to allow FastISM to distinguish between 1-to-1 and region-to-1
 class PointwiseConvBlock(ConvBlock):
     def __init__(self, filters, name = 'PointwiseConvBlock', **kwargs):
+        if 'kernel_size' in kwargs: 
+            del kwargs['kernel_size']
         super(PointwiseConvBlock, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
         __doc__ = getdoc(self)
 
