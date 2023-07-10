@@ -232,16 +232,14 @@ def build_model(channels: int = 1536,
     # Stem
     inp = layers.Input((sequence_length, num_nucleotides))
     x = layers.Conv1D(filters=channels//2, kernel_size=stem_kernel, padding='same', name='stem_conv')(inp)
-    y = PointwiseConvBlock(filters = channels//2, name = 'stem_pointwise')(x)
-    x = layers.Add()([x,y])
+    x = ResPointwiseConvBlock(filters = channels//2, name = 'stem_pointwise')(x)
     x = pooling(pooling_type=pooling_type, pool_size=pool_size, name = "stem_pool")(x)
 
     # Convolution tower
     tower_chans = exp_linspace_int(start=channels//2, end=channels, num_modules=num_convolution_layers, divisible_by=128)
     for ci in tower_chans:
         x = ConvBlock(filters = ci, kernel_size = conv_kernel, name = f'tower_conv_{ci+1}')(x)
-        y = PointwiseConvBlock(filters = ci, name = f'tower_pointwise_{ci+1}')(x)
-        x = layers.Add()([x,y])
+        x = ResPointwiseConvBlock(filters = ci, name = f'tower_pointwise_{ci+1}')(x)
         x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{ci+1}")(x)
     
     # Identity layer to use as stopping point for FastISM - after this operations are global
@@ -250,10 +248,8 @@ def build_model(channels: int = 1536,
 
     # Transformer tower
     for ti in range(num_transformer_layers):
-        y = MHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{ti+1}')(x)
-        x = layers.Add()([x,y])
-        y = FeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{ti+1}')(x)
-        x = layers.Add()([x,y])
+        x = ResMHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{ti+1}')(x)
+        x = ResFeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{ti+1}')(x)
 
     # Pointwise final block
     if crop_length > 0:
@@ -388,10 +384,31 @@ class ConvBlock(layers.Layer):
         x = self.batchnorm(inputs, training = training)
         x = self.gelu(x)
         return self.conv(x)
+
+class ResConvBlock(ConvBlock):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        __doc__ += super().__doc__
     
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
+
+# Pointwise conv block 
+# Separate to allow FastISM to distinguish between 1-to-1 and region-to-1
 class PointwiseConvBlock(ConvBlock):
     def __init__(self, filters, name = 'PointwiseConvBlock', **kwargs):
         super(PointwiseConvBlock, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
+        __doc__ += super().__doc__
+
+class ResPointwiseConvBlock(PointwiseConvBlock):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        __doc__ += super().__doc__
+    
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
 
 # TRANSFORMER BLOCK COMPONENTS
 class MHABlock(layers.Layer):
@@ -419,6 +436,15 @@ class MHABlock(layers.Layer):
         x = self.mha_ln(inputs)
         x = self.mha(x, training = training)
         return self.mha_dropout(x, training = training)
+    
+class ResMHABlock(MHABlock):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        __doc__ += super().__doc__
+    
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
 
 class FeedForward(layers.Layer):
     def __init__(self, channels, dropout_rate, name = 'FeedForward', **kwargs):
@@ -452,6 +478,15 @@ class FeedForward(layers.Layer):
             return self.mlp_dropout2(x)
         else:
             return x
+
+class ResFeedForward(FeedForward):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        __doc__ += super().__doc__
+    
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
 
 
 # MULTI-HEAD SELF-ATTENTION LAYER
