@@ -199,6 +199,12 @@ class AttentionPooling1D(layers.Layer):
         self._per_channel = per_channel
         self._w_init_scale = w_init_scale
 
+        # Needed for compatibility with FastISM
+        self.pool_size = pool_size
+        self.strides = self.pool_size
+        self.padding = "valid" # ensure it behaves like MaxPooling1D with valid padding
+        self.data_format = "channels_last"
+
     def build(self, inputs_shape):
         # Construct learnable layer part
         # Put in build to have access to inputs_shape automatically
