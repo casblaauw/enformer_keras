@@ -87,7 +87,7 @@ class Enformer(Model):
         self.stem = Sequential(
             [Input(shape=(self._sequence_length, self._num_nucleotides)),
              layers.Conv1D(filters=self._channels//2, kernel_size=self._stem_kernel, padding='same', name='stem_conv'),
-             Residual(PointwiseConvBlock(filters=self._channels//2, name = 'stem_pointwise')),
+             ResPointwiseConvBlock(filters=self._channels//2, name = 'stem_pointwise'),
              pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)],
             name='stem')
         
@@ -106,7 +106,7 @@ class Enformer(Model):
             [Input(shape = (self._sequence_length//2, self._channels//2))] +
             [Sequential([
                 ConvBlock(filters=filters, kernel_size=self._conv_kernel, name=f'tower_conv_{i+1}'),
-                Residual(PointwiseConvBlock(filters=filters, name=f'tower_pointwise_{i+1}')),
+                ResPointwiseConvBlock(filters=filters, name=f'tower_pointwise_{i+1}'),
                 pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
                 ], name=f'convolution_{i+1}') 
             for i, filters in enumerate(self._filters_list)],
@@ -117,8 +117,8 @@ class Enformer(Model):
         self.transformer_tower = Sequential(
             [Input(shape = (self._tower_out_length, self._channels))] +
             [Sequential(
-                [Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
-                Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')
+                [ResMHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate, name = 'res1'),
+                ResFeedForward(channels = self._channels, dropout_rate = self._dropout_rate, name = 'res2')
                 ], name=f'transformer_{j+1}') 
             for j in range(self._num_transformer_layers)],
             name = 'transformer_tower')
@@ -257,19 +257,19 @@ def pooling(pooling_type, pool_size, training=False):
         raise ValueError(f'invalid pooling type: {pooling_type}')
 
 # RESIDUAL WRAPPER
-class Residual(layers.Layer):
-    def __init__(self, module: layers.Layer, name: str = 'residual', **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.module = module
+# class Residual(layers.Layer):
+#     def __init__(self, module: layers.Layer, name: str = 'residual', **kwargs):
+#         super().__init__(name=name, **kwargs)
+#         self.module = module
     
-    def get_config(self):
-        config = super().get_config()
-        config.update({"module": self.module})
-        return config
+#     def get_config(self):
+#         config = super().get_config()
+#         config.update({"module": self.module})
+#         return config
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
-        x = self.module(inputs, training = training)
-        return layers.Add()([x, inputs])
+#     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+#         x = self.module(inputs, training = training)
+#         return layers.Add()([x, inputs])
 
 # CONVOLUTIONAL BLOCK
 class ConvBlock(layers.Layer):
@@ -292,9 +292,27 @@ class ConvBlock(layers.Layer):
         x = self.gelu(x)
         return self.conv(x)
 
+class ResConvBlock(ConvBlock):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
+
+# Pointwise conv block 
+# Separate to allow FastISM to distinguish between 1-to-1 and region-to-1
 class PointwiseConvBlock(ConvBlock):
     def __init__(self, filters, name = 'PointwiseConvBlock', **kwargs):
         super(PointwiseConvBlock, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
+
+class ResPointwiseConvBlock(PointwiseConvBlock):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
 
 # TRANSFORMER BLOCK COMPONENTS
 class MHABlock(layers.Layer):
@@ -322,6 +340,14 @@ class MHABlock(layers.Layer):
         x = self.mha_ln(inputs)
         x = self.mha(x, training = training)
         return self.mha_dropout(x, training = training)
+    
+class ResMHABlock(MHABlock):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
 
 class FeedForward(layers.Layer):
     def __init__(self, channels, dropout_rate, name = 'FeedForward', **kwargs):
@@ -355,6 +381,14 @@ class FeedForward(layers.Layer):
             return self.mlp_dropout2(x)
         else:
             return x
+
+class ResFeedForward(FeedForward):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+        x = super().call(inputs, training = training)
+        return layers.Add()([x, inputs])
 
 
 # MULTI-HEAD SELF-ATTENTION LAYER
