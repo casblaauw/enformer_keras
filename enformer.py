@@ -10,6 +10,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import Input, layers, initializers, Model, Sequential
 from typing import Optional, List
+from inspect import getdoc
 
 # MAIN MODEL
 class Enformer(Model):
@@ -388,7 +389,7 @@ class ConvBlock(layers.Layer):
 class ResConvBlock(ConvBlock):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        __doc__ += super().__doc__
+        __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
         x = super().call(inputs, training = training)
@@ -399,12 +400,12 @@ class ResConvBlock(ConvBlock):
 class PointwiseConvBlock(ConvBlock):
     def __init__(self, filters, name = 'PointwiseConvBlock', **kwargs):
         super(PointwiseConvBlock, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
-        __doc__ += super().__doc__
+        __doc__ = getdoc(self)
 
 class ResPointwiseConvBlock(PointwiseConvBlock):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        __doc__ += super().__doc__
+        __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
         x = super().call(inputs, training = training)
@@ -440,7 +441,7 @@ class MHABlock(layers.Layer):
 class ResMHABlock(MHABlock):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        __doc__ += super().__doc__
+        __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
         x = super().call(inputs, training = training)
@@ -482,7 +483,7 @@ class FeedForward(layers.Layer):
 class ResFeedForward(FeedForward):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        __doc__ += super().__doc__
+        __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
         x = super().call(inputs, training = training)
