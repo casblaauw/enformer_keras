@@ -31,6 +31,7 @@ class Enformer(Model):
         self._channels = channels
         self._num_convolution_layers = num_convolution_layers   # if not 6, changes bin size -> need to make more changes
         self._num_transformer_layers = num_transformer_layers 
+        self._num_heads = num_heads
         self._heads_channels = heads_channels
         self._sequence_length = sequence_length
         self._target_length = target_length                     # target length, in (2**(num_convolution_layers+1)) bp bins (default 896 bins of 128bp)
@@ -42,14 +43,15 @@ class Enformer(Model):
         # Variables that are hardcoded for now
         self._num_nucleotides = 4
         self._stem_kernel = 15  # filter size=15 for stem module
+        self._conv_kernel = 5   # filter size=5 for tower convolution modules
         self._pool_size = 2     # filter size=2 for pooling, strides=2. WHEN CHANGING, ADJUST TOWER_OUT_LENGTH CALC
 
         # Calculate derived parameters
         # Tower output length: n of bins after convolution pooling.
         #   every conv layer (and stem layer) halves length -> seq_len/binwidth = dimensionality
         # Crop length: (original dimensionality - target_length) // 2 = crop length from both sides 
-        self._tower_out_length = self._sequence_length/(2**(self._num_convolution_layers + 1))
-        self._crop_length = (self._tower_out_length-self._target_length)//2
+        self._tower_out_length = int(self._sequence_length/(2**(self._num_convolution_layers + 1)))
+        self._crop_length = int((self._tower_out_length-self._target_length)//2)
 
         # Attention parameters       
         attention_params = {
@@ -58,7 +60,7 @@ class Enformer(Model):
             # number of features of the value matrix
             "value_dim": self._channels // self._num_heads,
             # number of heads
-            "num_heads": num_heads,
+            "num_heads": self._num_heads,
             "scaling": True,
             # attention dropout rate
             'attn_dropout_rate': 0.05,
@@ -126,7 +128,7 @@ class Enformer(Model):
             [Input(shape=(self._tower_out_length, self._channels)),
              tf.keras.layers.Cropping1D(self._crop_length),
              # pointwise convolutional 1D
-             ConvBlock(filters=self._channels*2, kernel_size=1, padding='same'),
+             ConvBlock(filters=self._channels*2, kernel_size=1),
              layers.Dropout(self._dropout_rate//8),
              layers.Activation('gelu')], 
             name='final_pointwise')
@@ -214,7 +216,7 @@ class AttentionPooling1D(layers.Layer):
         })
         return config
     
-    @tf.function(jit_compile=True)
+    # @tf.function(jit_compile=True)
     def call(self, inputs, training = False):
         _, length, num_features = inputs.shape
         
@@ -238,7 +240,7 @@ def pooling(pooling_type, pool_size, training=False):
         # apply attention pooling
         # filter size = stride in pooling layers
         # filter size=2, stride=2
-        return AttentionPooling1D(pool_size = pool_size, per_channel = True, w_init_gain = 2.0)
+        return AttentionPooling1D(pool_size = pool_size, per_channel = True, w_init_scale = 2.0)
     elif pooling_type=='max':
         # apply max pooling
         # filter size = stride in pooling layers
@@ -505,7 +507,7 @@ class MHSelfAttention(layers.Layer):
             # project positions to form relative keys (seq_len*2)
             distances = tf.range(-seq_len + 1, seq_len, dtype=tf.float32)[tf.newaxis]
             positional_encodings = pos_feats_all(positions=distances,
-                                                       feature_size=self.num_pos_feats,
+                                                       feature_size=self._num_pos_feats,
                                                        seq_length=seq_len,
                                                        feature_functions=self._pos_encoding_funs,
                                                        symmetric=self._symmetric_pos_encoding)
