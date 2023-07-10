@@ -136,11 +136,12 @@ class Enformer(Model):
         # HEADS
         # create final heads for human and mouse
         self.heads = {
-            heads: layers.Dense(
-                channels, 
+            head: layers.Dense(
+                n_channels, 
                 activation='softplus', 
-                input_shape = (self._target_length, self._channels*2)
-            ) for heads, channels in self._heads_channels.items()
+                input_shape = (self._target_length, self._channels*2),
+                name = f"head_{head}"
+            ) for head, n_channels in self._heads_channels.items()
         }
         
         # list of modules in the final model
