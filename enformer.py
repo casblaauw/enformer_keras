@@ -174,7 +174,7 @@ class Enformer(Model):
         # apply heads layers on inputs
         return {head_name: head(x) for head_name, head in self.heads.items()}
     
-def make_functional_enformer(channels: int = 1536,
+def build_model(channels: int = 1536,
                 num_convolution_layers: int = 6,
                 num_transformer_layers: int = 11,
                 num_heads: int = 8,
@@ -229,30 +229,14 @@ def make_functional_enformer(channels: int = 1536,
         "zero_init": True,
         "initializer": None}
     
+    # Stem
     inp = layers.Input((sequence_length, num_nucleotides))
-
-    # self.stem = Sequential(
-    #         [Input(shape=(self._sequence_length, self._num_nucleotides)),
-    #          layers.Conv1D(filters=self._channels//2, kernel_size=self._stem_kernel, padding='same', name='stem_conv'),
-    #          Residual(ConvBlock(filters=self._channels//2, kernel_size=1, name = 'stem_pointwise')),
-    #          pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)],
-    #         name='stem')
-    
     x = layers.Conv1D(filters=channels//2, kernel_size=stem_kernel, padding='same', name='stem_conv')(inp)
     y = PointwiseConvBlock(filters = channels//2, name = 'stem_pointwise')(x)
     x = layers.Add()([x,y])
     x = pooling(pooling_type=pooling_type, pool_size=pool_size, name = "stem_pool")(x)
 
-    # self.conv_tower = Sequential(
-    # [Input(shape = (self._sequence_length//2, self._channels//2))] +
-    # [Sequential([
-    #     ConvBlock(filters=filters, kernel_size=self._conv_kernel, name=f'tower_conv_{i+1}'),
-    #     Residual(ConvBlock(filters=filters, kernel_size=1, name=f'tower_pointwise_{i+1}')),
-    #     pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
-    #     ], name=f'convolution_{i+1}') 
-    # for i, filters in enumerate(self._filters_list)],
-    # name = 'conv_tower')
-
+    # Convolution tower
     tower_chans = exp_linspace_int(start=channels//2, end=channels, num_modules=num_convolution_layers, divisible_by=128)
     for ci in tower_chans:
         x = ConvBlock(filters = ci, kernel_size = conv_kernel, name = f'tower_conv_{ci+1}')(x)
@@ -260,58 +244,31 @@ def make_functional_enformer(channels: int = 1536,
         x = layers.Add()([x,y])
         x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{ci+1}")(x)
     
-    # just an identity layer, using this as STOP_LAYER
-    # there's an edge case that needs to be taken care of
-    # when the stop layer is within a branch
+    # Identity layer to use as stopping point for FastISM - after this operations are global
+    # Covers an edge case according to devs
     x = layers.Layer()(x)
-    
-    # self.transformer_tower = Sequential(
-    #         [Input(shape = (self._tower_out_length, self._channels))] +
-    #         [Sequential(
-    #             [Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
-    #             Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')
-    #             ], name=f'transformer_{j+1}') 
-    #         for j in range(self._num_transformer_layers)],
-    #         name = 'transformer_tower')
 
+    # Transformer tower
     for ti in range(num_transformer_layers):
         y = MHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{ti+1}')(x)
         x = layers.Add()([x,y])
         y = FeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{ti+1}')(x)
         x = layers.Add()([x,y])
 
-    # self.ffn = Sequential(
-    #         [Input(shape=(self._tower_out_length, self._channels)),
-    #          tf.keras.layers.Cropping1D(self._crop_length),
-    #          # pointwise convolutional 1D
-    #          ConvBlock(filters=self._channels*2, kernel_size=1),
-    #          layers.Dropout(self._dropout_rate//8),
-    #          layers.Activation('gelu')], 
-    #         name='final_pointwise')
-
-    if crop_length>0:
+    # Pointwise final block
+    if crop_length > 0:
         x = layers.Cropping1D(crop_length)(x)
-        
-    # x = conv_block(C*2, 1, 'valid', x)
     x = PointwiseConvBlock(filters = channels * 2, name = 'final_pointwise')(x)
     x = layers.Dropout(dropout_rate//8)(x)
     x = layers.Activation('gelu')(x)
     
     # Heads
-    # self.heads = {
-    #         head: layers.Dense(
-    #             n_channels, 
-    #             activation='softplus', 
-    #             input_shape = (self._target_length, self._channels*2),
-    #             name = f"head_{head}"
-    #         ) for head, n_channels in self._heads_channels.items()
-    #     }
-    
     outputs = []
-    for head, n_channels in heads_channels.items():
-        outputs.append(layers.Dense(n_channels, activation='softplus', input_shape = (target_length, channels*2), name = head)(x))
+    for head, n_tracks in heads_channels.items():
+        outputs.append(layers.Dense(n_tracks, activation='softplus', input_shape = (target_length, channels*2), name = head)(x))
 
-    m = Model(inputs=inp, outputs=outputs, name = name)
+    # Construct model
+    m = Model(inputs = inp, outputs = outputs, name = name)
     return m
 
 # ATTENTION POOLING LAYER
