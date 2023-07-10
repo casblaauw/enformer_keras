@@ -238,19 +238,19 @@ def build_model(channels: int = 1536,
 
     # Convolution tower
     tower_chans = exp_linspace_int(start=channels//2, end=channels, num_modules=num_convolution_layers, divisible_by=128)
-    for ci in tower_chans:
-        x = ConvBlock(filters = ci, kernel_size = conv_kernel, name = f'tower_conv_{ci+1}')(x)
-        x = ResPointwiseConvBlock(filters = ci, name = f'tower_pointwise_{ci+1}')(x)
-        x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{ci+1}")(x)
+    for cidx, n_layer_channels in enumerate(tower_chans):
+        x = ConvBlock(filters = n_layer_channels, kernel_size = conv_kernel, name = f'tower_conv_{cidx+1}')(x)
+        x = ResPointwiseConvBlock(filters = n_layer_channels, name = f'tower_pointwise_{cidx+1}')(x)
+        x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{cidx+1}")(x)
     
     # Identity layer to use as stopping point for FastISM - after this operations are global
     # Covers an edge case according to devs
     x = layers.Layer()(x)
 
     # Transformer tower
-    for ti in range(num_transformer_layers):
-        x = ResMHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{ti+1}')(x)
-        x = ResFeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{ti+1}')(x)
+    for tidx in range(num_transformer_layers):
+        x = ResMHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{tidx+1}')(x)
+        x = ResFeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{tidx+1}')(x)
 
     # Pointwise final block
     if crop_length > 0:
