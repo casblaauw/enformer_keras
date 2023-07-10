@@ -87,7 +87,7 @@ class Enformer(Model):
         self.stem = Sequential(
             [Input(shape=(self._sequence_length, self._num_nucleotides)),
              layers.Conv1D(filters=self._channels//2, kernel_size=self._stem_kernel, padding='same', name='stem_conv'),
-             Residual(ConvBlock(filters=self._channels//2, kernel_size=1, name = 'stem_pointwise')),
+             Residual(PointwiseConvBlock(filters=self._channels//2, name = 'stem_pointwise')),
              pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)],
             name='stem')
         
@@ -106,7 +106,7 @@ class Enformer(Model):
             [Input(shape = (self._sequence_length//2, self._channels//2))] +
             [Sequential([
                 ConvBlock(filters=filters, kernel_size=self._conv_kernel, name=f'tower_conv_{i+1}'),
-                Residual(ConvBlock(filters=filters, kernel_size=1, name=f'tower_pointwise_{i+1}')),
+                Residual(PointwiseConvBlock(filters=filters, name=f'tower_pointwise_{i+1}')),
                 pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
                 ], name=f'convolution_{i+1}') 
             for i, filters in enumerate(self._filters_list)],
@@ -128,7 +128,7 @@ class Enformer(Model):
             [Input(shape=(self._tower_out_length, self._channels)),
              tf.keras.layers.Cropping1D(self._crop_length),
              # pointwise convolutional 1D
-             ConvBlock(filters=self._channels*2, kernel_size=1),
+             PointwiseConvBlock(filters=self._channels*2),
              layers.Dropout(self._dropout_rate//8),
              layers.Activation('gelu')], 
             name='final_pointwise')
@@ -291,6 +291,10 @@ class ConvBlock(layers.Layer):
         x = self.batchnorm(inputs, training = training)
         x = self.gelu(x)
         return self.conv(x)
+
+class PointwiseConvBlock(ConvBlock):
+    def __init__(self, filters, name = 'PointwiseConvBlock', **kwargs):
+        super(PointwiseConvBlock, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
 
 # TRANSFORMER BLOCK COMPONENTS
 class MHABlock(layers.Layer):
