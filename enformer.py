@@ -394,8 +394,8 @@ class ConvBlock(layers.Layer):
         return self.conv(x)
 
 class ResConvBlock(ConvBlock):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
@@ -412,8 +412,8 @@ class PointwiseConvBlock(ConvBlock):
         __doc__ = getdoc(self)
 
 class ResPointwiseConvBlock(PointwiseConvBlock):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
@@ -448,8 +448,8 @@ class MHABlock(layers.Layer):
         return self.mha_dropout(x, training = training)
     
 class ResMHABlock(MHABlock):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
@@ -490,8 +490,8 @@ class FeedForward(layers.Layer):
             return x
 
 class ResFeedForward(FeedForward):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
     def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
