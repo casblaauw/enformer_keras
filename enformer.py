@@ -127,7 +127,7 @@ class Enformer(Model):
         # POINTWISE FFN MODULE        
         self.ffn = Sequential(
             [Input(shape=(self._tower_out_length, self._channels)),
-             tf.keras.layers.Cropping1D(self._crop_length),
+             layers.Cropping1D(self._crop_length),
              # pointwise convolutional 1D
              ConvBlock(filters=self._channels*2, kernel_size=1),
              layers.Dropout(self._dropout_rate//8),
@@ -334,11 +334,11 @@ class AttentionPooling1D(layers.Layer):
         if length == None: # this can happen at when creating fast_ism_model
             return inputs # don't do anything for now
             
-        inputs = tf.reshape(
+        inputs = ops.reshape(
             inputs,
             (-1, length // self._pool_size, self._pool_size, num_features))
-        return tf.reduce_sum(
-            inputs * tf.nn.softmax(tf.matmul(inputs, self.w), axis=-2),
+        return ops.sum(
+            inputs * ops.softmax(ops.matmul(inputs, self.w), axis=-2),
             axis=-2)
 
     
@@ -368,7 +368,7 @@ class Residual(layers.Layer):
         config.update({"module": self.module})
         return config
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = self.module(inputs, training = training)
         return layers.Add()([x, inputs])
 
@@ -394,7 +394,7 @@ class ConvBlock(layers.Layer):
                       "kernel_size": self._kernel_size})
         return config
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = self.batchnorm(inputs, training = training)
         x = self.gelu(x)
         return self.conv(x)
@@ -404,7 +404,7 @@ class ResConvBlock(ConvBlock):
         super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = super().call(inputs, training = training)
         return layers.Add()([x, inputs])
 
@@ -422,7 +422,7 @@ class ResPointwiseConvBlock(PointwiseConvBlock):
         super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = super().call(inputs, training = training)
         return layers.Add()([x, inputs])
 
@@ -448,7 +448,7 @@ class MHABlock(layers.Layer):
                        "dropout_rate": self._dropout_rate})
         return config
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = self.mha_ln(inputs)
         x = self.mha(x, training = training)
         return self.mha_dropout(x, training = training)
@@ -458,7 +458,7 @@ class ResMHABlock(MHABlock):
         super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = super().call(inputs, training = training)
         return layers.Add()([x, inputs])
 
@@ -483,12 +483,12 @@ class FeedForward(layers.Layer):
                        "dropout_rate": self._dropout_rate})
         return config
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = self.mlp_ln(inputs)
         x = self.mlp_linear1(x)
         if training:
             x = self.mlp_dropout1(x)
-        x = tf.nn.relu(x)
+        x = ops.relu(x)
         x = self.mlp_linear2(x)
         if training:
             return self.mlp_dropout2(x)
@@ -500,7 +500,7 @@ class ResFeedForward(FeedForward):
         super().__init__(*args, **kwargs)
         __doc__ = getdoc(self)
     
-    def call(self, inputs: tf.Tensor, training = False) -> tf.Tensor:
+    def call(self, inputs, training = False):
         x = super().call(inputs, training = training)
         return layers.Add()([x, inputs])
 
@@ -519,7 +519,7 @@ class MHSelfAttention(layers.Layer):
                  pos_encoding_funs: List[str] = ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma'], 
                  num_pos_feats: Optional[int] = None, 
                  zero_init: bool = True, 
-                 initializer: Optional[tf.keras.initializers.Initializer] = None, 
+                 initializer: Optional[initializers.Initializer] = None, 
                  name: str = 'mhsa', 
                  **kwargs):
         """Creates a MultiheadAttention module.
@@ -601,13 +601,19 @@ class MHSelfAttention(layers.Layer):
                                           use_bias=False,
                                           kernel_initializer=self._initializer)
             # shape:[1, 8, 1, 64]
-            self._r_w_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
-                                                           dtype=tf.float32),
-                                         name='r_w_bias')
+            # self._r_w_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
+            #                                                dtype=tf.float32),
+            #                              name='r_w_bias')
+            self._r_w_bias = self.add_weight(shape = (1, self._num_heads, 1, self._QK_dim),
+                                             initializer = self._initializer,
+                                             trainable = True)
             # shape:[1, 8, 1, 64]
-            self._r_r_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
-                                                           dtype=tf.float32),
-                                         name='r_r_bias')
+            # self._r_r_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
+            #                                                dtype=tf.float32),
+            #                              name='r_r_bias')
+            self._r_r_bias = self.add_weight(shape = (1, self._num_heads, 1, self._QK_dim),
+                                             initializer = self._initializer,
+                                             trainable = True)
     
     def get_config(self):
         config = super().get_config()
@@ -639,11 +645,11 @@ class MHSelfAttention(layers.Layer):
         QKV_dim = output.shape[-1]//self._num_heads
         # split heads (H) * channels (H/Q or V) into separate axes
         # output shape:[B, T, H, Q/K or V]
-        multihead_out = tf.reshape(output, shape=(-1, seq_len, self._num_heads, QKV_dim))
+        multihead_out = ops.reshape(output, shape=(-1, seq_len, self._num_heads, QKV_dim))
         
         # shape:[B, T, H, Q/K or V] -> shape:[B, H, T, Q/K or V]
         # B batch size, T sequence length, H _num_heads, *Q/K _key_size or V _value_size
-        return tf.transpose(multihead_out, [0, 2, 1, 3])
+        return ops.transpose(multihead_out, [0, 2, 1, 3])
     
     def call(self, inputs, training=False):
         # input sequence length
@@ -664,7 +670,7 @@ class MHSelfAttention(layers.Layer):
         
         if self._pos_encoding:
             # project positions to form relative keys (seq_len*2)
-            distances = tf.range(-seq_len + 1, seq_len, dtype=tf.float32)[tf.newaxis]
+            distances = ops.expand_dims(ops.arange(-seq_len + 1, seq_len), 0)
             positional_encodings = pos_feats_all(positions=distances,
                                                        feature_size=self._num_pos_feats,
                                                        seq_length=seq_len,
@@ -682,9 +688,9 @@ class MHSelfAttention(layers.Layer):
             # add shifted relative logits to content logits
             # content_logits.shape:[B, H, T', T] confirmed ([1, 8, 1536, 1536])
             # content_logits = tf.linalg.matmul(Q + self._r_w_bias, K, transpose_b=True)
-            content_logits = tf.einsum('b h i d, b h j d -> b h i j', Q + self._r_w_bias, K)
+            content_logits = ops.einsum('b h i d, b h j d -> b h i j', Q + self._r_w_bias, K)
             # relative_logits.shape:[B, H, T', 2T-1] confirmed shape:[1, 8, 1536, 3071]
-            relative_logits = tf.linalg.matmul(Q + self._r_r_bias, r_K, transpose_b=True)
+            relative_logits = ops.matmul(Q + self._r_r_bias, r_K, transpose_b=True)
             # relative_logits.shape:[B, H, T', T] confirmed shape:[1, 8, 1536, 1536]
             relative_logits = relative_shift(relative_logits)
             # COMPUTE ATTENTION WEIGHTS
@@ -694,7 +700,7 @@ class MHSelfAttention(layers.Layer):
             # COMPUTE ATTENTION WEIGHTS
             # calculate q*kT
             # output shape:[B, H, T', T]
-            logits = tf.linalg.matmul(Q, K, transpose_b=True)
+            logits = ops.matmul(Q, K, transpose_b=True)
         # apply softmax(q*kT) to calculate the ATTENTION WEIGHTS matrix
         weights = layers.Softmax()(logits)
         # attention DROPOUT
@@ -704,13 +710,13 @@ class MHSelfAttention(layers.Layer):
         # COMPUTE ATTENTION
         # transpose and reshape the output
         # output shape:[B, H, T', V] confirmed shape:[1, 8, 1536, 192]
-        attention = tf.linalg.matmul(weights, V)
+        attention = ops.matmul(weights, V)
         
         # final linear layer
         # trans_out shape:[B, T', H, V] confirmed shape:[1, 1536, 8, 192]
-        trans_out = tf.transpose(attention, [0, 2, 1, 3])
+        trans_out = ops.transpose(attention, [0, 2, 1, 3])
         # attended_embeds shape:(B, T', H*V] confirmed shape:[1, 1536, 1536]
-        attended_embeds = tf.reshape(trans_out, shape=(-1, trans_out.shape[-3], self.V_proj_dim))
+        attended_embeds = ops.reshape(trans_out, shape=(-1, trans_out.shape[-3], self.V_proj_dim))
         output = self._to_out(attended_embeds)
         
         return output
@@ -740,13 +746,15 @@ def exp_linspace_int(start, end, num_modules, divisible_by=1):
 # shift the relative logits like in TransformerXL
 def relative_shift(x):
     # we prepend zeros on the final timescale dimension
-    to_pad = tf.zeros_like(x[..., :1])
-    x = tf.concat([to_pad, x], -1)
+    to_pad = ops.zeros_like(x[..., :1])
+    x = ops.concatenate([to_pad, x], -1)
     _, num_heads, t1, t2 = x.shape
-    x = tf.reshape(x, [-1, num_heads, t2, t1])
-    x = tf.slice(x, [0, 0, 1, 0], [-1, -1, -1, -1])
-    x = tf.reshape(x, [-1, num_heads, t1, t2-1])
-    x = tf.slice(x, [0, 0, 0, 0], [-1, -1, -1, (t2+1)//2])
+    x = ops.reshape(x, [-1, num_heads, t2, t1])
+    # x = tf.slice(x, [0, 0, 1, 0], [-1, -1, -1, -1])
+    x = x[0:, 0:, 1:, 0:]
+    x = ops.reshape(x, [-1, num_heads, t1, t2-1])
+    # x = tf.slice(x, [0, 0, 0, 0], [-1, -1, -1, (t2+1)//2])
+    x = x[:, :, :, :((t2+1)//2)]
     
     return x
 
@@ -767,7 +775,7 @@ def get_pos_feat_fun(name):
 # compute relative positional encodings/features
 # each positional feature function will compute/provide the same fraction of features,
 # making up the total of feature_size
-def pos_feats_all(positions: tf.Tensor,
+def pos_feats_all(positions,
                   # num_relative_position_features: total number of basis functions*n(int)
                   feature_size: int,
                   # length of the transformer input sequence (default 1536)
@@ -801,7 +809,7 @@ def pos_feats_all(positions: tf.Tensor,
     # num_relative_position_features // number of feature functions (*2 if symmetric False)
     num_basis_per_class = feature_size//num_components
     # calculate symmetric relative encodings with each function and concatenate them in rows
-    embeddings = tf.concat([fun(tf.abs(positions),
+    embeddings = ops.concatenate([fun(ops.absolute(positions),
                                 # feature_size pass to each function
                                 num_basis_per_class,
                                 seq_length,
@@ -809,10 +817,10 @@ def pos_feats_all(positions: tf.Tensor,
                            axis=-1)
     # if False, both symmetric and asymmetric versions of rel encodings will be contenated in rows
     if not symmetric:
-        embeddings = tf.concat([embeddings,
-                                tf.sign(positions)[..., tf.newaxis]*embeddings],
+        embeddings = ops.concatenate([embeddings,
+                                ops.expand_dims(ops.sign(positions), axis = -1)*embeddings],
                                axis=-1)
-    tf.TensorShape(embeddings.shape).assert_is_compatible_with(positions.shape + [feature_size])
+    # tf.TensorShape(embeddings.shape).assert_is_compatible_with(positions.shape + [feature_size])
     
     # tensor of shape: `positions.shape+(feature_size, )`
     return embeddings
@@ -820,10 +828,10 @@ def pos_feats_all(positions: tf.Tensor,
 # prepend dimensions to a tensor
 # num_dims: number of dimensions to prepend
 def _prepend_dims(x, num_dims):
-    return tf.reshape(x, shape=[1]*num_dims+x.shape)
+    return ops.reshape(x, shape=[1]*num_dims+x.shape)
 
 # exponential positional features
-def pos_feats_exponential(positions: tf.Tensor,
+def pos_feats_exponential(positions,
                           # num_basis_per_class=num_relative_position_features//num_components(*2 if symmetric False)
                           num_basis: int,
                           # length of the transformer input sequence (default 1536)
@@ -834,24 +842,24 @@ def pos_feats_exponential(positions: tf.Tensor,
     del bin_size  # unused
     if seq_length is None:
         # tf.reduce_max calculates the max value of the tensor
-        seq_length = tf.reduce_max(tf.abs(positions))+1
+        seq_length = ops.max(ops.abs(positions))+1
     # grid of half lifes from [3, seq_length/2] with feature_size distributed on the log scale
-    seq_length = tf.cast(seq_length, dtype=tf.float32)
-    max_range = tf.math.log(seq_length)/tf.math.log(2.0)
+    seq_length = ops.cast(seq_length)#, dtype=tf.float32)
+    max_range = ops.log(seq_length)/ops.log(2.0)
     # calculate half lifes
-    half_life = tf.pow(2.0, tf.linspace(min_half_life, max_range, num_basis))
+    half_life = ops.power(2.0, ops.linspace(min_half_life, max_range, num_basis))
     # prepend 2 dimensions to the tensor half_life
     half_life = _prepend_dims(half_life, positions.shape.rank)
-    positions = tf.abs(positions)
+    positions = ops.absolute(positions)
     # calculate symmetric positional encodings
-    outputs = tf.exp(-tf.math.log(2.0)/half_life*positions[..., tf.newaxis])
-    tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape + [num_basis])
+    outputs = ops.exp(-ops.log(2.0)/half_life*ops.expand_dims(positions, -1))
+    # tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape + [num_basis])
     
     # a tensor with shape [2*seq_length-1, num_basis]
     return outputs
 
 # positional features using a central mask (allow only central features)
-def pos_feats_central_mask(positions: tf.Tensor,
+def pos_feats_central_mask(positions,
                            # num_basis_per_class=num_relative_position_features//num_components(*2 if symmetric False)
                            num_basis: int,
                            # length of the transformer input sequence (default 1536)
@@ -859,24 +867,27 @@ def pos_feats_central_mask(positions: tf.Tensor,
                            bin_size: int=None):
     del seq_length  # unused
     del bin_size  # unused
-    center_widths = tf.pow(2.0, tf.range(1, num_basis+1, dtype=tf.float32))
+    center_widths = ops.power(2.0, ops.arange(1, num_basis+1))#, dtype=tf.float32))
     center_widths = center_widths-1
     center_widths = _prepend_dims(center_widths, positions.shape.rank)
-    outputs = tf.cast(center_widths > tf.abs(positions)[..., tf.newaxis],
-                      tf.float32)
-    tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
+    outputs = ops.cast(center_widths > ops.expand_dims(ops.absolute(positions), -1))#,
+                    #   tf.float32)
+    # tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
     
     return outputs
 
 # gamma probability distribution function: p(x|concentration, rate)
 def gamma_pdf(x, concentration, rate):
-    log_unnormalized_prob = tf.math.xlogy(concentration-1., x)-rate*x
-    log_normalization = (tf.math.lgamma(concentration)-concentration*tf.math.log(rate))
+    # log_unnormalized_prob = tf.math.xlogy(concentration-1., x)-rate*x
+    log_unnormalized_prob = (concentration-1.)*ops.log(x)-rate*x
+    # log_normalization = (tf.math.lgamma(concentration)-concentration*tf.math.log(rate))
+    lgamma_concentration = ops.log(ops.prod(ops.arange(1, concentration+1)))
+    log_normalization = lgamma_concentration - concentration*ops.log(rate)
     
-    return tf.exp(log_unnormalized_prob-log_normalization)
+    return ops.exp(log_unnormalized_prob-log_normalization)
 
 # positional features computed using the gamma distributions
-def pos_feats_gamma(positions: tf.Tensor,
+def pos_feats_gamma(positions,
                     # num_basis_per_class=num_relative_position_features//num_components(*2 if symmetric False)
                     num_basis: int,
                     # length of the transformer input sequence (default 1536)
@@ -887,28 +898,28 @@ def pos_feats_gamma(positions: tf.Tensor,
     del bin_size  # unused
     if seq_length is None:
         # tf.reduce_max calculates the max value of the tensor
-        seq_length = tf.reduce_max(tf.abs(positions))+1
+        seq_length = ops.max(ops.absolute(positions))+1
     if stddev is None:
         stddev = seq_length/(2*num_basis)
     if start_mean is None:
         start_mean = seq_length/num_basis
-    mean = tf.linspace(start_mean, seq_length, num=num_basis)
+    mean = ops.linspace(start_mean, seq_length, num=num_basis)
     mean = _prepend_dims(mean, positions.shape.rank)
     concentration = (mean/stddev)**2
     rate = mean/stddev**2
-    probabilities = gamma_pdf(tf.abs(tf.cast(positions, dtype=tf.float32))[..., tf.newaxis],
+    probabilities = gamma_pdf(ops.expand_dims(ops.absolute(ops.cast(positions)), -1),
                               concentration,
                               rate)
     probabilities += 1e-8 # to ensure numerical stability
-    outputs = probabilities/tf.reduce_max(probabilities,
-                                          axis=1,
-                                          keepdims=True)
-    tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
+    outputs = probabilities/ops.max(probabilities,
+                                    axis=1,
+                                    keepdims=True)
+    # tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
     
     return outputs
 
 # cosine positional features
-def pos_feats_cosine(positions: tf.Tensor,
+def pos_feats_cosine(positions,
                      # num_basis_per_class=num_relative_position_features//num_components(*2 if symmetric False)
                      num_basis: int,
                      # length of the transformer input sequence (default 1536)
@@ -916,16 +927,16 @@ def pos_feats_cosine(positions: tf.Tensor,
                      bin_size: int=None):
     del bin_size  # unused
     del seq_length  # unused
-    periodicity = 1.25*tf.pow(2.0, tf.range(0, num_basis, dtype=tf.float32))
+    periodicity = 1.25*ops.power(2.0, ops.arange(0, num_basis))#, dtype=tf.float32))
     periodicity = _prepend_dims(periodicity, positions.shape.rank)
     
-    outputs = tf.math.cos(2*np.pi*positions[..., tf.newaxis]/periodicity)
-    tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
+    outputs = ops.cos(2*np.pi*ops.expand_dims(positions, -1)/periodicity)
+    # tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
     
     return outputs
 
 # exponentially increasing point focuses
-def pos_feats_linear_masks(positions: tf.Tensor,
+def pos_feats_linear_masks(positions,
                            # num_basis_per_class=num_relative_position_features//num_components(*2 if symmetric False)
                            num_basis: int,
                            # length of the transformer input sequence (default 1536)
@@ -933,16 +944,16 @@ def pos_feats_linear_masks(positions: tf.Tensor,
                            bin_size: int=None):
     del bin_size  # unused
     del seq_length  # unused
-    distances = tf.range(0, num_basis, dtype=tf.float32)
+    distances = ops.arange(0, num_basis)#, dtype=tf.float32)
     distances = _prepend_dims(distances, positions.shape.rank)
-    outputs = tf.cast(distances==tf.abs(positions[..., tf.newaxis]),
-                      dtype=tf.float32)
-    tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape +[num_basis])
+    outputs = ops.cast(distances==ops.absolute(ops.expand_dims(positions, -1)))#,
+                    #   dtype=tf.float32)
+    # tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape +[num_basis])
     
     return outputs
 
 # sine/cosine positional encodings
-def pos_feats_sin_cos(positions: tf.Tensor,
+def pos_feats_sin_cos(positions,
                       # num_basis_per_class=num_relative_position_features//num_components(*2 if symmetric False)
                       num_basis: int,
                       # length of the transformer input sequence (default 1536)
@@ -953,11 +964,11 @@ def pos_feats_sin_cos(positions: tf.Tensor,
     del seq_length  # unused
     if num_basis % 2 != 0:
         raise ValueError('num_basis needs to be divisible by 2')
-    i = tf.range(0, num_basis, 2, dtype=tf.float32)
+    i = ops.arange(0, num_basis, 2, dtype=tf.float32)
     i = _prepend_dims(i, positions.shape.rank)
     # concat sines and cosines and return
-    outputs = tf.concat([tf.sin(positions[..., tf.newaxis]/max_time**(i/num_basis)),
-                         tf.cos(positions[..., tf.newaxis]/max_time**(i/num_basis))], -1)
-    tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
+    outputs = ops.concatenate([ops.sin(ops.expand_dims(positions, -1)/max_time**(i/num_basis)),
+                               ops.cos(ops.expand_dims(positions, -1)/max_time**(i/num_basis))], -1)
+    # tf.TensorShape(outputs.shape).assert_is_compatible_with(positions.shape+[num_basis])
     
     return outputs
