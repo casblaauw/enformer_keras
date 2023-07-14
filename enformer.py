@@ -239,7 +239,8 @@ def build_model(channels: int = 1536,
     # Convolution tower
     tower_chans = exp_linspace_int(start=channels//2, end=channels, num_modules=num_convolution_layers, divisible_by=128)
     for cidx, n_layer_channels in enumerate(tower_chans):
-        x = ConvBlock(filters = n_layer_channels, kernel_size = conv_kernel, name = f'tower_conv_{cidx+1}')(x)
+        # x = ConvBlock(filters = n_layer_channels, kernel_size = conv_kernel, name = f'tower_conv_{cidx+1}')(x)
+        x = build_conv_block(filters = n_layer_channels, kernel_size = conv_kernel, padding = 'same', x_input = x, name = f'tower_conv_{cidx+1}')
         x = ResPointwiseConvBlock(filters = n_layer_channels, name = f'tower_pointwise_{cidx+1}')(x)
         x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{cidx+1}")(x)
     
@@ -307,10 +308,12 @@ class AttentionPooling1D(layers.Layer):
         # Construct learnable layer part
         # Put in build to have access to inputs_shape automatically
         num_features = inputs_shape[-1]
-        self.logit_linear = tf.keras.layers.Dense(
-            units=num_features if self._per_channel else 1,
-            use_bias=False,  # Softmax is agnostic to shifts.
-            kernel_initializer=tf.keras.initializers.Identity(self._w_init_scale))    
+        output_size = num_features if self._per_channel else 1
+        self.w = self.add_weight(
+            shape=(num_features, output_size),
+            initializer="random_normal",
+            trainable=True,
+        )  
     
     def get_config(self):
         config = super().get_config()
@@ -335,11 +338,8 @@ class AttentionPooling1D(layers.Layer):
             inputs,
             (-1, length // self._pool_size, self._pool_size, num_features))
         return tf.reduce_sum(
-            inputs * tf.nn.softmax(self.logit_linear(inputs), axis=-2),
+            inputs * tf.nn.softmax(tf.matmul(inputs, self.w), axis=-2),
             axis=-2)
-        # return tf.reduce_sum(
-        #     inputs * tf.nn.softmax(tf.matmul(inputs, self.w), axis=-2),
-        #     axis=-2)
 
     
 # pooling method
@@ -373,6 +373,12 @@ class Residual(layers.Layer):
         return layers.Add()([x, inputs])
 
 # CONVOLUTIONAL BLOCK
+def build_conv_block(filters, kernel_size, padding, x_input, name = 'ConvBlock', **kwargs):
+    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05)(x_input)
+    x = layers.Activation('gelu')(x)
+    x = layers.Conv1D(filters = filters, kernel_size = kernel_size, padding = padding, name = name)(x)
+    return x
+
 class ConvBlock(layers.Layer):
     def __init__(self, filters, kernel_size: int = 1, name = 'ConvBlock', **kwargs):
         super().__init__(name=name, **kwargs)
