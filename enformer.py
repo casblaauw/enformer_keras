@@ -127,7 +127,7 @@ class Enformer(Model):
         # POINTWISE FFN MODULE        
         self.ffn = Sequential(
             [Input(shape=(self._tower_out_length, self._channels)),
-             tf.keras.layers.Cropping1D(self._crop_length),
+             layers.Cropping1D(self._crop_length),
              # pointwise convolutional 1D
              ConvBlock(filters=self._channels*2, kernel_size=1),
              layers.Dropout(self._dropout_rate//8),
@@ -519,7 +519,7 @@ class MHSelfAttention(layers.Layer):
                  pos_encoding_funs: List[str] = ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma'], 
                  num_pos_feats: Optional[int] = None, 
                  zero_init: bool = True, 
-                 initializer: Optional[tf.keras.initializers.Initializer] = None, 
+                 initializer: Optional[initializers.Initializer] = None, 
                  name: str = 'mhsa', 
                  **kwargs):
         """Creates a MultiheadAttention module.
