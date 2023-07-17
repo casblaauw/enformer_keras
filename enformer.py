@@ -7,8 +7,9 @@
 
 # imports
 import numpy as np
+import keras_core as keras
+from keras_core import ops, Input, layers, initializers, Model, Sequential
 import tensorflow as tf
-from tensorflow.keras import Input, layers, initializers, Model, Sequential
 from typing import Optional, List
 from inspect import getdoc
 
