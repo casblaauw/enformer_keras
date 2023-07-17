@@ -8,7 +8,7 @@
 # imports
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import Input, layers, initializers, Model, Sequential
+from tensorflow.keras import Input, layers, initializers, Model
 from typing import Optional, List
 from inspect import getdoc
 
@@ -70,7 +70,7 @@ def build_model(channels: int = 1536,
         "initializer": None}
     
     # Stem
-    inp = layers.Input((sequence_length, num_nucleotides))
+    inp = Input((sequence_length, num_nucleotides))
     x = layers.Conv1D(filters=channels//2, kernel_size=stem_kernel, padding='same', name='stem_conv')(inp)
     y = build_pointwise_conv_block(filters = channels//2, x_input = x, name = 'stem_pointwise')
     x = layers.Add()([x, y])
