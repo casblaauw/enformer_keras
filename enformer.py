@@ -248,7 +248,7 @@ class AttentionPooling1D(layers.Layer):
             inputs * tf.nn.softmax(tf.matmul(inputs, self.w), axis=-2),
             axis=-2)
 
-# MULTI-HEAD SELF-ATTENTION LAYER
+# Multi-head self-attention layer
 class MHSelfAttention(layers.Layer):
     def __init__(self, 
                  query_dim: int, 
