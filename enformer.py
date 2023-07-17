@@ -91,9 +91,9 @@ def build_model(channels: int = 1536,
 
     # Transformer tower
     for tidx in range(num_transformer_layers):
-        y = build_mha_block(attention_kwargs = attention_params, dropout_rate = dropout_rate, x_input = x, name = f'res1_{tidx+1}')
+        y = build_mha_block(attention_kwargs = attention_params, dropout_rate = dropout_rate, x_input = x, name = f'transformer_mha_{tidx+1}')
         x = layers.Add()([x, y])
-        y = build_feedforward_block(channels = channels, dropout_rate = dropout_rate, x_input = x, name = f'res2_{tidx+1}')
+        y = build_feedforward_block(channels = channels, dropout_rate = dropout_rate, x_input = x, name = f'transformer_ff_{tidx+1}')
         x = layers.Add()([x, y])
 
     # Pointwise final block
@@ -137,10 +137,10 @@ def build_conv_block(filters, kernel_size, padding, x_input, name = 'ConvBlock',
     x = layers.Conv1D(filters = filters, kernel_size = kernel_size, padding = padding, name = name, **kwargs)(x)
     return x
 
-def build_pointwise_conv_block(filters, padding, x_input, name = 'PointwiseConvBlock', **kwargs):
+def build_pointwise_conv_block(filters, x_input, name = 'PointwiseConvBlock', **kwargs):
     x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05)(x_input)
     x = layers.Activation('gelu')(x)
-    x = PointwiseConv1D(filters = filters, padding = padding, name = name, **kwargs)(x)
+    x = PointwiseConv1D(filters = filters, name = f'{name}_pointwise', **kwargs)(x)
     return x
 
 # Transformer block
@@ -149,8 +149,8 @@ def build_mha_block(attention_kwargs, dropout_rate, x_input, name = 'MHABlock', 
     then combined with a residual FeedForward block to become a Transformer.
     Name and extra **kwargs are passed to MHSelfAttention, dropout rate is passed to dropout layer.
     """
-    x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name='lnorm1')(x_input)
-    x = MHSelfAttention(**attention_kwargs, name, **kwargs)(x)
+    x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name=f'{name}_lnorm')(x_input)
+    x = MHSelfAttention(name = name, **attention_kwargs, **kwargs)(x)
     x = layers.Dropout(rate = dropout_rate)(x)
     return x
 
@@ -158,11 +158,11 @@ def build_feedforward_block(channels, dropout_rate, x_input, name = "FeedForward
     """Builds a feedforward block (LayerNorm+PointwiseConv+Dropout+ReLU+PointwiseConv+Dropout), to be used residually,
     after a residual MHA block to become a transformer.
     Name (with _1/_2 appended) and extra **kwargs passed to both PointwiseConv1D layers."""
-    x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name = 'lnorm2')(x_input)
-    x = layers.PointwiseConv1D(filters = channels*2, name = f'{name}_1', **kwargs)(x)
+    x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name = f'{name}_lnorm')(x_input)
+    x = PointwiseConv1D(filters = channels*2, name = f'{name}_pointwise_1', **kwargs)(x)
     x = layers.Dropout(rate = dropout_rate)(x)
     x = tf.nn.relu(x)
-    x = layers.PointwiseConv1D(filters = channels, name = f'{name}_2', **kwargs)(x)
+    x = PointwiseConv1D(filters = channels, name = f'{name}_pointwise_2', **kwargs)(x)
     x = layers.Dropout(rate = dropout_rate)(x)
     return x
 
