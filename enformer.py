@@ -12,169 +12,6 @@ from keras_core import ops, Input, layers, initializers, Model, Sequential
 import tensorflow as tf
 from typing import Optional, List
 from inspect import getdoc
-
-# MAIN MODEL
-class Enformer(Model):
-    def __init__(self, 
-                channels: int = 1536,
-                num_convolution_layers: int = 6,
-                num_transformer_layers: int = 11,
-                num_heads: int = 8,
-                heads_channels = {'human': 5313, 'mouse': 1643},
-                sequence_length = 196608,
-                target_length = 896,
-                dropout_rate = 0.4,
-                pooling_type: str = 'attention',
-                to_freeze: Optional[List] = None,
-                name: str = 'enformer',
-                **kwargs):
-        super(Enformer, self).__init__(name = name, **kwargs)
-
-        self._channels = channels
-        self._num_convolution_layers = num_convolution_layers   # if not 6, changes bin size -> need to make more changes
-        self._num_transformer_layers = num_transformer_layers 
-        self._num_heads = num_heads
-        self._heads_channels = heads_channels
-        self._sequence_length = sequence_length
-        self._target_length = target_length                     # target length, in (2**(num_convolution_layers+1)) bp bins (default 896 bins of 128bp)
-        self._dropout_rate = dropout_rate
-        self._pooling_type = pooling_type                       # one of ['attention', 'max']
-        self._to_freeze = to_freeze
-        
-
-        # Variables that are hardcoded for now
-        self._num_nucleotides = 4
-        self._stem_kernel = 15  # filter size=15 for stem module
-        self._conv_kernel = 5   # filter size=5 for tower convolution modules
-        self._pool_size = 2     # filter size=2 for pooling, strides=2. WHEN CHANGING, ADJUST TOWER_OUT_LENGTH CALC
-
-        # Calculate derived parameters
-        # Tower output length: n of bins after convolution pooling.
-        #   every conv layer (and stem layer) halves length -> seq_len/binwidth = dimensionality
-        # Crop length: (original dimensionality - target_length) // 2 = crop length from both sides 
-        self._tower_out_length = int(self._sequence_length/(2**(self._num_convolution_layers + 1)))
-        self._crop_length = int((self._tower_out_length-self._target_length)//2)
-
-        # Attention parameters       
-        attention_params = {
-            # number of features of query/key matrix
-            "query_dim": 64,
-            # number of features of the value matrix
-            "value_dim": self._channels // self._num_heads,
-            # number of heads
-            "num_heads": self._num_heads,
-            "scaling": True,
-            # attention dropout rate
-            'attn_dropout_rate': 0.05,
-            # positional encoding dropout rate
-            'pos_dropout_rate': 0.01,
-            # calculate positional encoding
-            'pos_encoding': True,
-            # calculate positional features only symmetric relative to position 0
-            "symmetric_pos_encoding": False,
-            # positional encoding functions to be used
-            # ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma']
-            # ['pos_feats_cosine', 'pos_feats_linear_masks', 'pos_feats_sin_cos']
-            # Default is ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma']
-            "pos_encoding_funs": ['pos_feats_exponential', 'pos_feats_central_mask', 'pos_feats_gamma'],
-            # number of positional encoding features
-            # min 6 for default relative_position_functions
-            # min 12 for positional_features_sin_cos
-            "num_pos_feats": self._channels // self._num_heads,
-            # zero initialize
-            "zero_init": True,
-            "initializer": None}
-        
-        # STEM
-        self.stem = Sequential(
-            [Input(shape=(self._sequence_length, self._num_nucleotides)),
-             layers.Conv1D(filters=self._channels//2, kernel_size=self._stem_kernel, padding='same', name='stem_conv'),
-             Residual(ConvBlock(filters=self._channels//2, kernel_size=1, name = 'stem_pointwise')),
-             pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)],
-            name='stem')
-        
-        # CONVOLUTIONAL TOWER (CONVOLUTIONAL MODULE x 6)
-        # num features: 768 -> 896 -> 1024 -> 1152 -> 1280 -> 1536
-        # create a list with exponentially increasing number of filters
-        # [768, 896, 1024, 1152, 1280, 1536]
-        self._filters_list = exp_linspace_int(start=self._channels//2,
-                                              end=self._channels,
-                                              # 6 convolutional modules
-                                              num_modules=self._num_convolution_layers,
-                                              divisible_by=128)
-        # list of convolutional modules in tower
-        # Sequential of tower modules, each module is Sequential of ConvBlock+Res(ConvBlock)+pooling
-        self.conv_tower = Sequential(
-            [Input(shape = (self._sequence_length//2, self._channels//2))] +
-            [Sequential([
-                ConvBlock(filters=filters, kernel_size=self._conv_kernel, name=f'tower_conv_{i+1}'),
-                Residual(ConvBlock(filters=filters, kernel_size=1, name=f'tower_pointwise_{i+1}')),
-                pooling(pooling_type=self._pooling_type, pool_size=self._pool_size)
-                ], name=f'convolution_{i+1}') 
-            for i, filters in enumerate(self._filters_list)],
-            name = 'conv_tower')
-
-        # TRANSFORMER TOWER (TRANSFORMER MODULE x 11)
-        # Sequential of transformer modules, each module is Sequential of MHABlock+FeedForward        
-        self.transformer_tower = Sequential(
-            [Input(shape = (self._tower_out_length, self._channels))] +
-            [Sequential(
-                [Residual(MHABlock(attention_kwargs = attention_params, dropout_rate = self._dropout_rate), name = 'res1'),
-                Residual(FeedForward(channels = self._channels, dropout_rate = self._dropout_rate), name = 'res2')
-                ], name=f'transformer_{j+1}') 
-            for j in range(self._num_transformer_layers)],
-            name = 'transformer_tower')
-        
-        # POINTWISE FFN MODULE        
-        self.ffn = Sequential(
-            [Input(shape=(self._tower_out_length, self._channels)),
-             layers.Cropping1D(self._crop_length),
-             # pointwise convolutional 1D
-             ConvBlock(filters=self._channels*2, kernel_size=1),
-             layers.Dropout(self._dropout_rate//8),
-             layers.Activation('gelu')], 
-            name='final_pointwise')
-
-        # HEADS
-        # create final heads for human and mouse
-        self.heads = {
-            head: layers.Dense(
-                n_channels, 
-                activation='softplus', 
-                input_shape = (self._target_length, self._channels*2),
-                name = f"head_{head}"
-            ) for head, n_channels in self._heads_channels.items()
-        }
-        
-        # list of modules in the final model
-        self.modules = dict(stem=self.stem,
-                            conv_tower=self.conv_tower,
-                            transformer_tower=self.transformer_tower,
-                            ffn_module=self.ffn,
-                            heads=self.heads)
-       
-       # Freeze supplied modules
-        if exists(self._to_freeze):
-            self.freeze_module_init(self._to_freeze)
-
-
-    # Freeze modules at build time
-    def freeze_module_init(self, to_freeze):
-        for key in to_freeze:
-            value = self.modules[key]
-            value.trainable = False
-    
-    def call(self, inputs, training=False):
-        # apply stem module
-        x = self.stem(inputs, training = training)
-        # apply convolutional tower
-        x = self.conv_tower(x, training = training)
-        # apply transformer tower
-        x = self.transformer_tower(x, training = training)
-        # apply ffn
-        x = self.ffn(x, training = training)
-        # apply heads layers on inputs
-        return {head_name: head(x) for head_name, head in self.heads.items()}
     
 def build_model(channels: int = 1536,
                 num_convolution_layers: int = 6,
@@ -234,7 +71,8 @@ def build_model(channels: int = 1536,
     # Stem
     inp = layers.Input((sequence_length, num_nucleotides))
     x = layers.Conv1D(filters=channels//2, kernel_size=stem_kernel, padding='same', name='stem_conv')(inp)
-    x = ResPointwiseConvBlock(filters = channels//2, name = 'stem_pointwise')(x)
+    y = build_pointwise_conv_block(filters = channels//2, x_input = x, name = 'stem_pointwise')
+    x = layers.Add()([x, y])
     x = pooling(pooling_type=pooling_type, pool_size=pool_size, name = "stem_pool")(x)
 
     # Convolution tower
@@ -242,7 +80,8 @@ def build_model(channels: int = 1536,
     for cidx, n_layer_channels in enumerate(tower_chans):
         # x = ConvBlock(filters = n_layer_channels, kernel_size = conv_kernel, name = f'tower_conv_{cidx+1}')(x)
         x = build_conv_block(filters = n_layer_channels, kernel_size = conv_kernel, padding = 'same', x_input = x, name = f'tower_conv_{cidx+1}')
-        x = ResPointwiseConvBlock(filters = n_layer_channels, name = f'tower_pointwise_{cidx+1}')(x)
+        y = build_pointwise_conv_block(filters = n_layer_channels, x_input = x, name = f'tower_pointwise_{cidx+1}')
+        x = layers.Add()([x, y])
         x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{cidx+1}")(x)
     
     # Identity layer to use as stopping point for FastISM - after this operations are global
@@ -251,13 +90,15 @@ def build_model(channels: int = 1536,
 
     # Transformer tower
     for tidx in range(num_transformer_layers):
-        x = ResMHABlock(attention_kwargs = attention_params, dropout_rate = dropout_rate, name = f'res1_{tidx+1}')(x)
-        x = ResFeedForward(channels = channels, dropout_rate = dropout_rate, name = f'res2_{tidx+1}')(x)
+        y = build_mha_block(attention_kwargs = attention_params, dropout_rate = dropout_rate, x_input = x, name = f'res1_{tidx+1}')
+        x = layers.Add()([x, y])
+        y = build_feedforward_block(channels = channels, dropout_rate = dropout_rate, x_input = x, name = f'res2_{tidx+1}')
+        x = layers.Add()([x, y])
 
     # Pointwise final block
     if crop_length > 0:
         x = layers.Cropping1D(crop_length)(x)
-    x = PointwiseConvBlock(filters = channels * 2, name = 'final_pointwise')(x)
+    x = build_pointwise_conv_block(filters = channels * 2, x_input = x, name = 'final_pointwise')
     x = layers.Dropout(dropout_rate//8)(x)
     x = layers.Activation('gelu')(x)
     
@@ -270,7 +111,71 @@ def build_model(channels: int = 1536,
     m = Model(inputs = inp, outputs = outputs, name = name)
     return m
 
-# ATTENTION POOLING LAYER
+# DEFINE SUBSECTION BUILD FUNCTIONS
+# Pooling method
+def pooling(pooling_type, pool_size, name = None, training=False):
+    if pooling_type=='attention':
+        # apply attention pooling
+        # filter size = stride in pooling layers
+        # filter size=2, stride=2
+        return AttentionPooling1D(pool_size = pool_size, per_channel = True, w_init_scale = 2.0, name = name)
+    elif pooling_type=='max':
+        # apply max pooling
+        # filter size = stride in pooling layers
+        # filter=2, stride=2
+        return layers.MaxPool1D(pool_size = pool_size, padding = 'same', name = name)
+    else:
+        raise ValueError(f'invalid pooling type: {pooling_type}')
+
+# Convolutional block
+def build_conv_block(filters, kernel_size, padding, x_input, name = 'ConvBlock', **kwargs):
+    """Builds a standard convolution block. 
+    All listed parameters and **kwargs passed to Conv1D."""
+    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05)(x_input)
+    x = layers.Activation('gelu')(x)
+    x = layers.Conv1D(filters = filters, kernel_size = kernel_size, padding = padding, name = name, **kwargs)(x)
+    return x
+
+def build_pointwise_conv_block(filters, padding, x_input, name = 'PointwiseConvBlock', **kwargs):
+    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05)(x_input)
+    x = layers.Activation('gelu')(x)
+    x = PointwiseConv1D(filters = filters, padding = padding, name = name, **kwargs)(x)
+    return x
+
+# Transformer block
+def build_mha_block(attention_kwargs, dropout_rate, x_input, name = 'MHABlock', **kwargs):
+    """Builds a multi-head attention block (LayerNorm+MHSelfAttention+Dropout), to be used residually, 
+    then combined with a residual FeedForward block to become a Transformer.
+    Name and extra **kwargs are passed to MHSelfAttention, dropout rate is passed to dropout layer.
+    """
+    x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name='lnorm1')(x_input)
+    x = MHSelfAttention(**attention_kwargs, name, **kwargs)(x)
+    x = layers.Dropout(rate = dropout_rate)(x)
+    return x
+
+def build_feedforward_block(channels, dropout_rate, x_input, name = "FeedForward", **kwargs):
+    """Builds a feedforward block (LayerNorm+PointwiseConv+Dropout+ReLU+PointwiseConv+Dropout), to be used residually,
+    after a residual MHA block to become a transformer.
+    Name (with _1/_2 appended) and extra **kwargs passed to both PointwiseConv1D layers."""
+    x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name = 'lnorm2')(x_input)
+    x = layers.PointwiseConv1D(filters = channels*2, name = f'{name}_1', **kwargs)(x)
+    x = layers.Dropout(rate = dropout_rate)(x)
+    x = ops.relu(x)
+    x = layers.PointwiseConv1D(filters = channels, name = f'{name}_2', **kwargs)(x)
+    x = layers.Dropout(rate = dropout_rate)(x)
+    return x
+
+# DEFINE LAYER CLASSES
+# Pointwise conv layer 
+# Separate to allow FastISM to distinguish between 1-to-1 and region-to-1
+class PointwiseConv1D(layers.Conv1D):
+    def __init__(self, filters, name = 'PointwiseConv', **kwargs):
+        if 'kernel_size' in kwargs: 
+            del kwargs['kernel_size']
+        super(PointwiseConv1D, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
+        __doc__ = getdoc(self)
+
+# Attention pooling layer
 class AttentionPooling1D(layers.Layer):
     """Pooling operation with optional weights."""
     def __init__(self,
@@ -342,171 +247,7 @@ class AttentionPooling1D(layers.Layer):
             inputs * ops.softmax(ops.matmul(inputs, self.w), axis=-2),
             axis=-2)
 
-    
-# pooling method
-def pooling(pooling_type, pool_size, name = None, training=False):
-    if pooling_type=='attention':
-        # apply attention pooling
-        # filter size = stride in pooling layers
-        # filter size=2, stride=2
-        return AttentionPooling1D(pool_size = pool_size, per_channel = True, w_init_scale = 2.0, name = name)
-    elif pooling_type=='max':
-        # apply max pooling
-        # filter size = stride in pooling layers
-        # filter=2, stride=2
-        return layers.MaxPool1D(pool_size = pool_size, padding = 'same', name = name)
-    else:
-        raise ValueError(f'invalid pooling type: {pooling_type}')
-
-# RESIDUAL WRAPPER
-class Residual(layers.Layer):
-    def __init__(self, module: layers.Layer, name: str = 'residual', **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.module = module
-    
-    def get_config(self):
-        config = super().get_config()
-        config.update({"module": self.module})
-        return config
-    
-    def call(self, inputs, training = False):
-        x = self.module(inputs, training = training)
-        return layers.Add()([x, inputs])
-
-# CONVOLUTIONAL BLOCK
-def build_conv_block(filters, kernel_size, padding, x_input, name = 'ConvBlock', **kwargs):
-    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05)(x_input)
-    x = layers.Activation('gelu')(x)
-    x = layers.Conv1D(filters = filters, kernel_size = kernel_size, padding = padding, name = name)(x)
-    return x
-
-class ConvBlock(layers.Layer):
-    def __init__(self, filters, kernel_size: int = 1, name = 'ConvBlock', **kwargs):
-        super().__init__(name=name, **kwargs)
-        self._filters = filters
-        self._kernel_size = kernel_size
-        self.batchnorm = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05, name = 'batch')
-        self.gelu = layers.Activation('gelu')
-        self.conv = layers.Conv1D(filters = self._filters, kernel_size = self._kernel_size, padding = 'same', name = 'conv')
-    
-    def get_config(self):
-        config = super().get_config()
-        config.update({"filters": self._filters,
-                      "kernel_size": self._kernel_size})
-        return config
-    
-    def call(self, inputs, training = False):
-        x = self.batchnorm(inputs, training = training)
-        x = self.gelu(x)
-        return self.conv(x)
-
-class ResConvBlock(ConvBlock):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        __doc__ = getdoc(self)
-    
-    def call(self, inputs, training = False):
-        x = super().call(inputs, training = training)
-        return layers.Add()([x, inputs])
-
-# Pointwise conv block 
-# Separate to allow FastISM to distinguish between 1-to-1 and region-to-1
-class PointwiseConvBlock(ConvBlock):
-    def __init__(self, filters, name = 'PointwiseConvBlock', **kwargs):
-        if 'kernel_size' in kwargs: 
-            del kwargs['kernel_size']
-        super(PointwiseConvBlock, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
-        __doc__ = getdoc(self)
-
-class ResPointwiseConvBlock(PointwiseConvBlock):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        __doc__ = getdoc(self)
-    
-    def call(self, inputs, training = False):
-        x = super().call(inputs, training = training)
-        return layers.Add()([x, inputs])
-
-# TRANSFORMER BLOCK COMPONENTS
-class MHABlock(layers.Layer):
-    def __init__(self, attention_kwargs, dropout_rate, name = 'MHABlock', **kwargs):
-        """Multi-head attention block, for use in a Residual layer, 
-        then combined with a Residual FeedForward block to become a Transformer.
-        """
-        super().__init__(name=name, **kwargs)
-        self._attention_kwargs = attention_kwargs
-        self._dropout_rate = dropout_rate
-
-        # No need to set scale initializer like in sonnet, already default 
-        self.mha_ln = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, 
-                                                beta_initializer = "zeros", gamma_initializer = "ones", name='lnorm1',)
-        self.mha = MHSelfAttention(**attention_kwargs)
-        self.mha_dropout = layers.Dropout(rate=dropout_rate)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"attention_kwargs": self._attention_kwargs,
-                       "dropout_rate": self._dropout_rate})
-        return config
-    
-    def call(self, inputs, training = False):
-        x = self.mha_ln(inputs)
-        x = self.mha(x, training = training)
-        return self.mha_dropout(x, training = training)
-    
-class ResMHABlock(MHABlock):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        __doc__ = getdoc(self)
-    
-    def call(self, inputs, training = False):
-        x = super().call(inputs, training = training)
-        return layers.Add()([x, inputs])
-
-class FeedForward(layers.Layer):
-    def __init__(self, channels, dropout_rate, name = 'FeedForward', **kwargs):
-        """FeedForward block, for use in a Residual layer,
-         after a Residual MHABlock, which together becomes a Transformer."""
-        super().__init__(name=name, **kwargs)
-        self._channels = channels
-        self._dropout_rate = dropout_rate
-
-        self.mlp_ln = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, 
-                                                beta_initializer = "zeros", gamma_initializer = "ones", name = 'lnorm2')
-        self.mlp_linear1 = layers.Dense(units = channels*2, name = 'ffn1')
-        self.mlp_dropout1 = layers.Dropout(rate = dropout_rate)
-        self.mlp_linear2 = layers.Dense(units = channels, name = 'ffn2')
-        self.mlp_dropout2 = layers.Dropout(rate = dropout_rate)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"channels": self._channels,
-                       "dropout_rate": self._dropout_rate})
-        return config
-    
-    def call(self, inputs, training = False):
-        x = self.mlp_ln(inputs)
-        x = self.mlp_linear1(x)
-        if training:
-            x = self.mlp_dropout1(x)
-        x = ops.relu(x)
-        x = self.mlp_linear2(x)
-        if training:
-            return self.mlp_dropout2(x)
-        else:
-            return x
-
-class ResFeedForward(FeedForward):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        __doc__ = getdoc(self)
-    
-    def call(self, inputs, training = False):
-        x = super().call(inputs, training = training)
-        return layers.Add()([x, inputs])
-
-
-# MULTI-HEAD SELF-ATTENTION LAYER
+# Multi-head self-attention layer
 class MHSelfAttention(layers.Layer):
     def __init__(self, 
                  query_dim: int, 
