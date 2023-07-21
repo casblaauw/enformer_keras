@@ -41,7 +41,7 @@ _ = snt_model(tf.constant(random_seq, dtype=tf.float32), is_training=False) # In
 # Create Keras enformer object
 keras_model = enformer_keras.build_model()
 # Initialize Keras model with random weights
-keras_output = keras_model(tf.constant(random_seq, dtype=tf.float32))
+_ = keras_model(tf.constant(random_seq, dtype=tf.float32))
 
 
 # define functions
@@ -195,9 +195,9 @@ def copy_snt_to_keras(snt_model, keras_model):
         snt_vars = copy_dense(trans_mha_mhsa._to_V, snt_vars, to_v_name, use_bias=False)
         snt_vars = copy_dense(trans_mha_mhsa._to_out, snt_vars, to_out_name)
         snt_vars = copy_dense(trans_mha_mhsa._to_rel_K, snt_vars, to_r_k_name, use_bias=False)
-        assert trans_mha_mhsa.weights[0].name == 'r_w_bias:0', f"You might be indexing into the MHSA wrongly. content_bias_name should be put at r_w_bias:0, this weight is called {trans_mha_mhsa.weights[0].name}"
+        assert trans_mha_mhsa.weights[0].name.endswith('r_w_bias:0'), f"You might be indexing into the MHSA wrongly. content_bias_name should be put at r_w_bias:0, this weight is called {trans_mha_mhsa.weights[0].name}"
         trans_mha_mhsa.weights[0].assign(snt_vars.pop(content_bias_name))
-        assert trans_mha_mhsa.weights[1].name == 'r_r_bias:0', f"You might be indexing into the MHSA wrongly. pos_encod_bias_name should be put at r_r_bias:0, this weight is called {trans_mha_mhsa.weights[1].name}"
+        assert trans_mha_mhsa.weights[1].name.endswith('r_r_bias:0'), f"You might be indexing into the MHSA wrongly. pos_encod_bias_name should be put at r_r_bias:0, this weight is called {trans_mha_mhsa.weights[1].name}"
         trans_mha_mhsa.weights[1].assign(snt_vars.pop(pos_encod_bias_name))
         
         # Copy feedforward block
@@ -232,7 +232,7 @@ copy_snt_to_keras(snt_model, keras_model)
 # compare predictions of the Keras model with the Sonnet version
 snt_preds = snt_model(tf.constant(random_seq, dtype=tf.float32), is_training=False)
 new_preds = keras_model(random_seq, training=False)
-assert np.allclose(snt_preds['human'], new_preds['human'], atol=1e-5)
+assert np.allclose(snt_preds['human'], new_preds['human'], atol=1e-5), "Your sonnet and transferred keras predictions do not match."
 
 # Manually save the entire model
 keras_model.save(os.path.join(output_dir, 'enformer_keras_model.keras'), save_format = 'keras')
