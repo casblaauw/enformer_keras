@@ -173,8 +173,7 @@ def build_feedforward_block(channels, dropout_rate, x_input, name = "FeedForward
 # GELU layer - since using the stock TF GeLU layer gave slightly different results
 class GeLU(layers.Layer):
     def __init__(self, name: str='GeLU', **kwargs):
-        super(GeLU, self).__init__(**kwargs)
-        self._init_set_name(name)
+        super(GeLU, self).__init__(name = name, **kwargs)
         
     def call(self, tensor: tf.Tensor) -> tf.Tensor:
         return activations.sigmoid(1.702*tensor)*tensor
@@ -377,7 +376,7 @@ class MHSelfAttention(layers.Layer):
                        "pos_dropout_rate": self._pos_dropout,
                        "pos_encoding": self._pos_encoding,
                        "symmetric_pos_encoding": self._symmetric_pos_encoding,
-                       "pos_necoding_funs": self._pos_encoding_funs,
+                       "pos_encoding_funs": self._pos_encoding_funs,
                        "num_pos_feats": self._num_pos_feats,
                        "zero_init": self._zero_init,
                        "initializer": self._initializer})
@@ -474,14 +473,11 @@ class MHSelfAttention(layers.Layer):
         return output
 
 # --------- start of utils.py ---------
-    
-def exists(val):
-    return val is not None
 
 # freeze modules after build
 def freeze_module(model, to_freeze):
     model.trainable = True
-    if exists(to_freeze):
+    if to_freeze is not None:
         for key in to_freeze:
             model.get_layer(key).trainable = False
 
