@@ -33,7 +33,7 @@ snt_model = enformer_snt.Enformer()
 checkpoint = tf.train.Checkpoint(module=snt_model)
 # Manually get the latest epoch in the checkpoint dir - can also directly pass checkpoint_path to checkpoint.restore()
 latest = tf.train.latest_checkpoint(os.path.dirname(checkpoint_path))
-print(latest)
+print(f"Found sonnet checkpoint {latest}")
 status = checkpoint.restore(latest).assert_existing_objects_matched()
 # Initialize Sonnet model
 _ = snt_model(tf.constant(random_seq, dtype=tf.float32), is_training=False) # Initialize model
@@ -240,6 +240,7 @@ keras_model.save(os.path.join(output_dir, 'enformer_keras_model.h5'), save_forma
 
 # Manually save weights
 keras_model.save_weights(os.path.join(output_dir, 'enformer_keras_weights'), save_format = 'tf')
+keras_model.save_weights(os.path.join(output_dir, 'enformer_keras_weights.h5'), save_format = 'h5')
 
 # Plot overlap of values
 fig, ax = plt.subplots(figsize = (30, 5))
@@ -249,4 +250,14 @@ ax.set_title('Sonnet vs transferred Keras predictions, human track 0, all 896 bi
 fig.legend()
 fig.savefig(os.path.join(output_dir, "weight_transfer_equivalence.png"))
 
-print(f"Keras model saved to disk! \nModel: {os.path.join(output_dir, 'enformer_keras_model.keras')} and .h5 \nWeights: {os.path.join(output_dir, 'enformer_keras_weights')} .index/.data-00000-of-00001")
+print("Keras model saved to disk!\nModel: {os.path.join(output_dir, 'enformer_keras_model')}[.keras|.h5]\nWeights: {os.path.join(output_dir, 'enformer_keras_weights')}[.h5|(.index +. data-00000-of-00001 + checkpoint)]")
+
+print("""
+To load the model, use tf.keras.models.load_model() with custom_objects like this:
+keras_model = tf.keras.models.load_model('enformer_keras_model.keras', 
+    custom_objects=\{"GeLU": enformer.GeLU, 
+    "PointwiseConv1D": enformer.PointwiseConv1D,
+    "AttentionPooling1D": enformer.AttentionPooling1D,
+    "MHSelfAttention": enformer.MHSelfAttention,
+    "VarianceScaling": tf.keras.initializers.VarianceScaling)\}
+""")
