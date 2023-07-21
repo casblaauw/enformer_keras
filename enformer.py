@@ -8,7 +8,7 @@
 # imports
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import Input, layers, initializers, Model
+from tensorflow.keras import Input, layers, initializers, activations, Model
 from typing import Optional, List
 from inspect import getdoc
 
@@ -70,10 +70,10 @@ def build_model(channels: int = 1536,
         "initializer": None}
     
     # Stem
-    inp = Input((sequence_length, num_nucleotides))
+    inp = Input((sequence_length, num_nucleotides), name = "input")
     x = layers.Conv1D(filters=channels//2, kernel_size=stem_kernel, padding='same', name='stem_conv')(inp)
     y = build_pointwise_conv_block(filters = channels//2, x_input = x, name = 'stem_pointwise')
-    x = layers.Add()([x, y])
+    x = layers.Add(name = f"stem_res")([x, y])
     x = pooling(pooling_type=pooling_type, pool_size=pool_size, name = "stem_pool")(x)
 
     # Convolution tower
@@ -82,7 +82,7 @@ def build_model(channels: int = 1536,
         # x = ConvBlock(filters = n_layer_channels, kernel_size = conv_kernel, name = f'tower_conv_{cidx+1}')(x)
         x = build_conv_block(filters = n_layer_channels, kernel_size = conv_kernel, padding = 'same', x_input = x, name = f'tower_conv_{cidx+1}')
         y = build_pointwise_conv_block(filters = n_layer_channels, x_input = x, name = f'tower_pointwise_{cidx+1}')
-        x = layers.Add()([x, y])
+        x = layers.Add(name = f"tower_res_{cidx+1}")([x, y])
         x = pooling(pooling_type=pooling_type, pool_size = pool_size, name = f"tower_pool_{cidx+1}")(x)
     
     # Identity layer to use as stopping point for FastISM - after this operations are global
@@ -92,21 +92,22 @@ def build_model(channels: int = 1536,
     # Transformer tower
     for tidx in range(num_transformer_layers):
         y = build_mha_block(attention_kwargs = attention_params, dropout_rate = dropout_rate, x_input = x, name = f'transformer_mha_{tidx+1}')
-        x = layers.Add()([x, y])
+        x = layers.Add(name = f"transformer_mha_res_{tidx+1}")([x, y])
         y = build_feedforward_block(channels = channels, dropout_rate = dropout_rate, x_input = x, name = f'transformer_ff_{tidx+1}')
-        x = layers.Add()([x, y])
+        x = layers.Add(name = f"transformer_ff_res_{tidx+1}")([x, y])
 
     # Pointwise final block
     if crop_length > 0:
-        x = layers.Cropping1D(crop_length)(x)
+        x = layers.Cropping1D(crop_length, name = 'crop')(x)
     x = build_pointwise_conv_block(filters = channels * 2, x_input = x, name = 'final_pointwise')
-    x = layers.Dropout(dropout_rate//8)(x)
-    x = layers.Activation('gelu')(x)
+    x = layers.Dropout(dropout_rate//8, name = 'final_pointwise_dropout')(x)
+    # x = layers.Activation('gelu')(x)
+    x = GeLU(name = "final_gelu")(x)
     
     # Heads
-    outputs = []
+    outputs = {}
     for head, n_tracks in heads_channels.items():
-        outputs.append(layers.Dense(n_tracks, activation='softplus', input_shape = (target_length, channels*2), name = head)(x))
+        outputs[head] = layers.Dense(n_tracks, activation='softplus', input_shape = (target_length, channels*2), name = head)(x)
 
     # Construct model
     m = Model(inputs = inp, outputs = outputs, name = name)
@@ -132,15 +133,17 @@ def pooling(pooling_type, pool_size, name = None, training=False):
 def build_conv_block(filters, kernel_size, padding, x_input, name = 'ConvBlock', **kwargs):
     """Builds a standard convolution block. 
     All listed parameters and **kwargs passed to Conv1D."""
-    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05)(x_input)
-    x = layers.Activation('gelu')(x)
-    x = layers.Conv1D(filters = filters, kernel_size = kernel_size, padding = padding, name = name, **kwargs)(x)
+    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05, name = f"{name}_bnorm")(x_input)
+    # x = layers.Activation('gelu')(x)
+    x = GeLU(name = f"{name}_gelu")(x)
+    x = layers.Conv1D(filters = filters, kernel_size = kernel_size, padding = padding, name = f"{name}_conv", **kwargs)(x)
     return x
 
 def build_pointwise_conv_block(filters, x_input, name = 'PointwiseConvBlock', **kwargs):
-    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05)(x_input)
-    x = layers.Activation('gelu')(x)
-    x = PointwiseConv1D(filters = filters, name = f'{name}_pointwise', **kwargs)(x)
+    x = layers.BatchNormalization(momentum = 0.9, epsilon = 1e-05, name = f"{name}_bnorm")(x_input)
+    # x = layers.Activation('gelu')(x)
+    x = GeLU(name = f"{name}_gelu")(x)
+    x = PointwiseConv1D(filters = filters, name = f'{name}_conv', **kwargs)(x)
     return x
 
 # Transformer block
@@ -150,8 +153,8 @@ def build_mha_block(attention_kwargs, dropout_rate, x_input, name = 'MHABlock', 
     Name and extra **kwargs are passed to MHSelfAttention, dropout rate is passed to dropout layer.
     """
     x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name=f'{name}_lnorm')(x_input)
-    x = MHSelfAttention(name = name, **attention_kwargs, **kwargs)(x)
-    x = layers.Dropout(rate = dropout_rate)(x)
+    x = MHSelfAttention(name = f"{name}_mhsa", **attention_kwargs, **kwargs)(x)
+    x = layers.Dropout(rate = dropout_rate, name = f"{name}_dropout")(x)
     return x
 
 def build_feedforward_block(channels, dropout_rate, x_input, name = "FeedForward", **kwargs):
@@ -160,13 +163,22 @@ def build_feedforward_block(channels, dropout_rate, x_input, name = "FeedForward
     Name (with _1/_2 appended) and extra **kwargs passed to both PointwiseConv1D layers."""
     x = layers.LayerNormalization(epsilon=1e-05, center = True, scale = True, beta_initializer = "zeros", gamma_initializer = "ones", name = f'{name}_lnorm')(x_input)
     x = PointwiseConv1D(filters = channels*2, name = f'{name}_pointwise_1', **kwargs)(x)
-    x = layers.Dropout(rate = dropout_rate)(x)
-    x = tf.nn.relu(x)
+    x = layers.Dropout(rate = dropout_rate, name = f"{name}_dropout_1")(x)
+    x = layers.ReLU(name = f"{name}_relu")(x)
     x = PointwiseConv1D(filters = channels, name = f'{name}_pointwise_2', **kwargs)(x)
-    x = layers.Dropout(rate = dropout_rate)(x)
+    x = layers.Dropout(rate = dropout_rate, name = f"{name}_dropout_2")(x)
     return x
 
 # DEFINE LAYER CLASSES
+# GELU layer - since using the stock TF GeLU layer gave slightly different results
+class GeLU(layers.Layer):
+    def __init__(self, name: str='GeLU', **kwargs):
+        super(GeLU, self).__init__(**kwargs)
+        self._init_set_name(name)
+        
+    def call(self, tensor: tf.Tensor) -> tf.Tensor:
+        return activations.sigmoid(1.702*tensor)*tensor
+
 # Pointwise conv layer 
 # Separate to allow FastISM to distinguish between 1-to-1 and region-to-1
 class PointwiseConv1D(layers.Conv1D):
@@ -220,6 +232,7 @@ class AttentionPooling1D(layers.Layer):
             shape=(num_features, output_size),
             initializer="random_normal",
             trainable=True,
+            name = 'att_pool_weight'
         )  
     
     def get_config(self):
@@ -344,13 +357,15 @@ class MHSelfAttention(layers.Layer):
                                           use_bias=False,
                                           kernel_initializer=self._initializer)
             # shape:[1, 8, 1, 64]
-            self._r_w_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
-                                                           dtype=tf.float32),
-                                         name='r_w_bias')
+            self._r_w_bias = self.add_weight(name = 'r_w_bias', 
+                                             shape = (1, self._num_heads, 1, self._QK_dim), 
+                                             dtype = tf.float32,
+                                             initializer = self._initializer)
             # shape:[1, 8, 1, 64]
-            self._r_r_bias = tf.Variable(self._initializer([1, self._num_heads, 1, self._QK_dim],
-                                                           dtype=tf.float32),
-                                         name='r_r_bias')
+            self._r_r_bias = self.add_weight(name = 'r_r_bias',
+                                             shape = (1, self._num_heads, 1, self._QK_dim),
+                                             dtype = tf.float32,
+                                             initializer = self._initializer)
     
     def get_config(self):
         config = super().get_config()
