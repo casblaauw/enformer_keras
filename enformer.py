@@ -356,13 +356,13 @@ class MHSelfAttention(layers.Layer):
                                           use_bias=False,
                                           kernel_initializer=self._initializer)
             # shape:[1, 8, 1, 64]
-            self._r_w_bias = self.add_weight(name = 'r_w_bias', 
+            self._r_w_bias = self.add_weight(name = f'{self.name}/r_w_bias', 
                                              shape = (1, self._num_heads, 1, self._QK_dim), 
                                              dtype = tf.float32,
                                              initializer = self._initializer,
                                              trainable = True)
             # shape:[1, 8, 1, 64]
-            self._r_r_bias = self.add_weight(name = 'r_r_bias',
+            self._r_r_bias = self.add_weight(name = f'{self.name}/r_r_bias',
                                              shape = (1, self._num_heads, 1, self._QK_dim),
                                              dtype = tf.float32,
                                              initializer = self._initializer,
