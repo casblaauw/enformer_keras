@@ -285,7 +285,7 @@ class MHSelfAttention(layers.Layer):
         super(MHSelfAttention, self).__init__(name = name, **kwargs)
 
         # Save parameters
-        self._QK_dim = query_dim    # number of features of query/key matrix
+        self._QK_dim = query_dim    # number of features of query and key matrices
         self._V_dim = value_dim     # number of features of the value matrix
         self._num_heads = num_heads # number of heads
         self._scaling = scaling
@@ -312,56 +312,73 @@ class MHSelfAttention(layers.Layer):
             self._num_pos_feats = num_pos_feats
         
         if initializer is None:
-            # VarianceScaling(scale=1.0, mode="fan_in", distribution="truncated_normal", seed=None)
             self._initializer = initializers.VarianceScaling(scale=2.0)
         else:
             self._initializer = initializer
+
+        # initializer for the embeddings
+        self._w_init = initializers.Zeros() if zero_init else self._initializer
+
         # number of features of the query/key matrix (_QK_size) multi-head projected (*_num_heads)
-        # H*Q/K==512
-        self.QK_proj_dim = self._QK_dim*self._num_heads
+        # H*(Q|K)==512
+        self._QK_proj_dim = self._QK_dim*self._num_heads
         # number of features of the value matrix (_V_size) multi-head projected (*_num_heads)
         # H*V==1536
-        self.V_proj_dim = self._V_dim*self._num_heads
+        self._V_proj_dim = self._V_dim*self._num_heads
         
+    def build(self, input_shape):
+        # Input 
+        # shape: [B, T, C] = [batch, 1536, 1536]
+        # B batch, T num sequence bins, C input features/channels
+
         # query calculation layer
-        # output shape:[T, H*Q/K]
-        # T sequence length, H*Q/K key_proj_size
-        self._to_Q = layers.Dense(self.QK_proj_dim, # number of units
-                                  name='to_Q',
-                                  use_bias=False,
-                                  kernel_initializer=self._initializer)
+        # shape: [C, H*(Q|K)] = [1536, 512]
+        # C num input features, H*(Q|K) key_proj_size = heads * key/query mat features
+        self._Q_w = self.add_weight(name = 'Q_kernel', 
+                                     shape = (input_shape[-1], self._QK_proj_dim), 
+                                     dtype = tf.float32,
+                                     initializer = self._initializer)
         # key calculation layer
-        # output shape:[T, H*Q/K]
-        self._to_K = layers.Dense(self.QK_proj_dim, # number of units
-                                  name='to_K',
-                                  use_bias=False,
-                                  kernel_initializer=self._initializer)
+        # shape: [C, H*(Q|K)] = [1536, 512]
+        self._K_w = self.add_weight(name = 'K_kernel', 
+                                     shape = (input_shape[-1], self._QK_proj_dim), 
+                                     dtype = tf.float32,
+                                     initializer = self._initializer)
         # value calculation layer
-        # output shape:[T, H*V]
-        # T sequence length, H*V embedding_size
-        self._to_V = layers.Dense(self.V_proj_dim, # number of units
-                                  name='to_V',
-                                  use_bias=False,
-                                  kernel_initializer=self._initializer)
-        # initiallizer for the embeddings
-        w_init = initializers.Zeros() if zero_init else self._initializer
+        # shape: [C, H*V] = [1536, 1536]
+        # C num input features, H*V embedding_size
+        self._V_w = self.add_weight(name = 'V_kernel', 
+                                     shape = (input_shape[-1], self._V_proj_dim), 
+                                     dtype = tf.float32,
+                                     initializer = self._initializer)
+        
         # embedding layer
-        self._to_out = layers.Dense(self.V_proj_dim,
-                                    name='to_out',
-                                    kernel_initializer=w_init)
+        # shape: [C, H*V] = [1536, 1536]
+        self._out_w = self.add_weight(name = 'out_kernel',
+                                      shape = (input_shape[-1], self._V_proj_dim),
+                                      dtype = tf.float32,
+                                      initializer = self._w_init)
+        # shape: [H*V]
+        self._out_b = self.add_weight(name = 'out_bias',
+                                      shape = self._V_proj_dim,
+                                      dtype = tf.float32,
+                                      initializer = initializers.Zeros)
+        
         # create additional layers if using relative positions
         if self._pos_encoding:
-            self._to_rel_K = layers.Dense(self.QK_proj_dim,
-                                          name='to_rel_K',
-                                          use_bias=False,
-                                          kernel_initializer=self._initializer)
-            # shape:[1, 8, 1, 64]
-            self._r_w_bias = self.add_weight(name = f'{self.name}/r_w_bias', 
+            # shape: [C//H, H*(Q|K)] = [192, 512]
+            # C num input features, H heads, Q|K key/query mat features
+            self._rel_K_w = self.add_weight(name = 'rel_K_kernel',
+                                            shape = (self._num_pos_feats, self._QK_proj_dim),
+                                            dtype = tf.float32,
+                                            initializer = self._initializer)
+            # shape: [1, H, 1, (Q|K)] = [1, 8, 1, 64]
+            self._r_w_bias = self.add_weight(name = f'r_w_bias', 
                                              shape = (1, self._num_heads, 1, self._QK_dim), 
                                              dtype = tf.float32,
                                              initializer = self._initializer)
-            # shape:[1, 8, 1, 64]
-            self._r_r_bias = self.add_weight(name = f'{self.name}/r_r_bias',
+            # shape: [1, H, 1, (Q|K)] = [1, 8, 1, 64]
+            self._r_r_bias = self.add_weight(name = f'r_r_bias',
                                              shape = (1, self._num_heads, 1, self._QK_dim),
                                              dtype = tf.float32,
                                              initializer = self._initializer)
@@ -382,38 +399,39 @@ class MHSelfAttention(layers.Layer):
                        "initializer": self._initializer})
         return config
     
-    def _multihead_output(self, layer, inputs):
-        """Applies a standard linear to inputs and returns multihead output."""
-        self._layer = layer
+    def _multihead_output(self, weight, inputs):
+        """Applies a standard matmul (linear layer w/o bias) to inputs and returns multihead output."""
         # apply layer on inputs in batches
-        # output shape:[B, T, H*Q/K or H*V]
-        # B batch size, T sequence length, H*Q/K QK_proj_dim or H*V V_proj_dim
-        output = self._layer(inputs)
+        # output shape:[B, T, H*(Q|K) or H*V]
+        # B batch size, T sequence length, H*(Q|K) QK_proj_dim or H*V V_proj_dim
+        output = tf.linalg.matmul(inputs, weight)
+        # shapes = weight.get_shape()
         # T sequence length
         seq_len = output.shape[-2]
-        # number of features of the query/key matrix (_QK_dim) or value matrix (_V_dim)
-        # Q/K or V      
+        # number of features of the query/key matrix (_QK_dim) or value matrix (_V_dim) before projecting across heads
+        # depending on whether Q, K or V input is passed
+        # (Q|K) or V      
         QKV_dim = output.shape[-1]//self._num_heads
         # split heads (H) * channels (H/Q or V) into separate axes
-        # output shape:[B, T, H, Q/K or V]
+        # output shape:[B, T, H, (Q|K) or V]
         multihead_out = tf.reshape(output, shape=(-1, seq_len, self._num_heads, QKV_dim))
         
-        # shape:[B, T, H, Q/K or V] -> shape:[B, H, T, Q/K or V]
-        # B batch size, T sequence length, H _num_heads, *Q/K _key_size or V _value_size
+        # shape:[B, T, H, (Q|K) or V] -> shape:[B, H, T, (Q|K) or V]
+        # B batch size, T sequence length, H _num_heads, *(Q|K) _key_size or V _value_size
         return tf.transpose(multihead_out, [0, 2, 1, 3])
     
     def call(self, inputs, training=False):
         # input sequence length
         seq_len = inputs.shape[1]
         # compute a multi-headed projection of Q based on the inputs
-        # output shape:[B, H, T, Q/K] confirmed shape:[1, 8, 1536, 64]
-        Q = self._multihead_output(self._to_Q, inputs)
+        # output shape:[B, H, T, (Q|K)] confirmed shape:[1, 8, 1536, 64]
+        Q = self._multihead_output(self._Q_w, inputs)
         # compute a multi-headed projection of K based on the inputs
-        # output shape:[B, H, T, Q/K] confirmed shape:[1, 8, 1536, 64]
-        K = self._multihead_output(self._to_K, inputs)
+        # output shape:[B, H, T, (Q|K)] confirmed shape:[1, 8, 1536, 64]
+        K = self._multihead_output(self._K_w, inputs)
         # compute a multi-headed projection of V based on the inputs
         # output shape:[B, H, T, V] confirmed shape:[1, 8, 1536, 192]
-        V = self._multihead_output(self._to_V, inputs)
+        V = self._multihead_output(self._V_w, inputs)
         # scale the query by the square-root of query/key size
         # for some reason only scale the query and not both query and key
         if self._scaling:
@@ -422,20 +440,20 @@ class MHSelfAttention(layers.Layer):
         if self._pos_encoding:
             # project positions to form relative keys (seq_len*2)
             distances = tf.range(-seq_len + 1, seq_len, dtype=tf.float32)[tf.newaxis]
-            positional_encodings = pos_feats_all(positions=distances,
-                                                       feature_size=self._num_pos_feats,
-                                                       seq_length=seq_len,
-                                                       feature_functions=self._pos_encoding_funs,
-                                                       symmetric=self._symmetric_pos_encoding)
+            # Positional encodings output: [B, 2T-1, C//H] = [1, 3071, 192]
+            # 2T-1 = Relative keys, C//H = num pos feats
+            positional_encodings = pos_feats_all(positions = distances,
+                                                 feature_size = self._num_pos_feats,
+                                                 seq_length = seq_len,
+                                                 feature_functions = self._pos_encoding_funs,
+                                                 symmetric = self._symmetric_pos_encoding)
             # positional encoding DROPOUT
-            # [1, 2T-1, Cr]
             if training:
-                # F: feature_size
-                # positional_encodings.shape:[B, 2T-1, F] confirmed ([1, 3071, 6])
+                # positional_encodings.shape:[B, 2T-1, C//H] confirmed ([1, 3071, 192])
                 positional_encodings = layers.Dropout(rate=self._pos_dropout, name='pos_drop')(positional_encodings)
             
-            # r_K.shape:[1, H, 2T-1, K] confirmed ([1, 8, 3071, 64])
-            r_K = self._multihead_output(self._to_rel_K, positional_encodings)
+            # r_K output shape: [B, H, 2T-1, (Q|K)] = [1, 8, 3071, 64]
+            r_K = self._multihead_output(self._rel_K_w, positional_encodings)
             # add shifted relative logits to content logits
             # content_logits.shape:[B, H, T', T] confirmed ([1, 8, 1536, 1536])
             # content_logits = tf.linalg.matmul(Q + self._r_w_bias, K, transpose_b=True)
@@ -467,8 +485,9 @@ class MHSelfAttention(layers.Layer):
         # trans_out shape:[B, T', H, V] confirmed shape:[1, 1536, 8, 192]
         trans_out = tf.transpose(attention, [0, 2, 1, 3])
         # attended_embeds shape:(B, T', H*V] confirmed shape:[1, 1536, 1536]
-        attended_embeds = tf.reshape(trans_out, shape=(-1, trans_out.shape[-3], self.V_proj_dim))
-        output = self._to_out(attended_embeds)
+        attended_embeds = tf.reshape(trans_out, shape=(-1, trans_out.shape[-3], self._V_proj_dim))
+        # output = self._to_out(attended_embeds)
+        output = tf.linalg.matmul(attended_embeds, self._out_w) + self._out_b
         
         return output
 

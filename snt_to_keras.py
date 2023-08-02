@@ -130,6 +130,28 @@ def copy_ln(mod, model_vars, name):
     mod.set_weights(ln)
     return model_vars
 
+def copy_mhsa(mod, model_vars, name):
+    Q_w = model_vars.pop(f'{name}q_layer/w:0')
+    K_w = model_vars.pop(f'{name}k_layer/w:0')
+    V_w = model_vars.pop(f'{name}v_layer/w:0')
+    out_w = model_vars.pop(f'{name}embedding_layer/w:0')
+    out_b = model_vars.pop(f'{name}embedding_layer/b:0')
+    rel_K_w = model_vars.pop(f'{name}r_k_layer/w:0')
+    r_w_b = model_vars.pop(f'{name}r_w_bias:0')
+    r_r_b = model_vars.pop(f'{name}r_r_bias:0')
+
+    mhsa = [Q_w, K_w, V_w, out_w, out_b, rel_K_w, r_w_b, r_r_b]
+    for i in range(len(mhsa)):
+        assert mhsa[i].shape == mod.weights[i].shape, f"shape {mhsa[i].shape} != {mod.weights[i].shape} (index {i})"
+        
+    # Specifically check two weird separate weights
+    assert mod.weights[6].name.endswith('r_w_bias:0'), f"You might be indexing into the MHSA wrongly. this weight should be put at r_w_bias:0, but it's called {mod.weights[6].name}"
+    assert mod.weights[7].name.endswith('r_r_bias:0'), f"You might be indexing into the MHSA wrongly. this weight should be put at r_r_bias:0, but it's is called {mod.weights[7].name}"
+    
+    mod.set_weights(mhsa)
+    
+    return model_vars
+
 # copy weights from sonnet to keras
 def copy_snt_to_keras(snt_model, keras_model):
     n_tower_layers = 6
@@ -177,28 +199,14 @@ def copy_snt_to_keras(snt_model, keras_model):
         trans_ff_conv2 = keras_model.get_layer(f"transformer_ff_{i+1}_pointwise_2")
         
         ln1_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/layer_norm/'
-        to_q_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/q_layer/'
-        to_k_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/k_layer/'
-        to_v_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/v_layer/'
-        to_out_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/embedding_layer/'
-        to_r_k_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/r_k_layer/'
-        content_bias_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/r_w_bias:0'
-        pos_encod_bias_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/r_r_bias:0'
+        mhsa_name = f'enformer/trunk/transformer/transformer_block_{i}/mha/attention_{i}/'
         ln2_name = f'enformer/trunk/transformer/transformer_block_{i}/mlp/layer_norm/'
         ffn1_name = f"enformer/trunk/transformer/transformer_block_{i}/mlp/linear/"
         ffn2_name = f"enformer/trunk/transformer/transformer_block_{i}/mlp/linear_1/"
     
         # Copy MHA block
         snt_vars = copy_ln(trans_mha_ln, snt_vars, ln1_name)
-        snt_vars = copy_dense(trans_mha_mhsa._to_Q, snt_vars, to_q_name, use_bias=False)
-        snt_vars = copy_dense(trans_mha_mhsa._to_K, snt_vars, to_k_name, use_bias=False)
-        snt_vars = copy_dense(trans_mha_mhsa._to_V, snt_vars, to_v_name, use_bias=False)
-        snt_vars = copy_dense(trans_mha_mhsa._to_out, snt_vars, to_out_name)
-        snt_vars = copy_dense(trans_mha_mhsa._to_rel_K, snt_vars, to_r_k_name, use_bias=False)
-        assert trans_mha_mhsa.weights[0].name.endswith('r_w_bias:0'), f"You might be indexing into the MHSA wrongly. content_bias_name should be put at r_w_bias:0, this weight is called {trans_mha_mhsa.weights[0].name}"
-        trans_mha_mhsa.weights[0].assign(snt_vars.pop(content_bias_name))
-        assert trans_mha_mhsa.weights[1].name.endswith('r_r_bias:0'), f"You might be indexing into the MHSA wrongly. pos_encod_bias_name should be put at r_r_bias:0, this weight is called {trans_mha_mhsa.weights[1].name}"
-        trans_mha_mhsa.weights[1].assign(snt_vars.pop(pos_encod_bias_name))
+        snt_vars = copy_mhsa(trans_mha_mhsa, snt_vars, mhsa_name)
         
         # Copy feedforward block
         snt_vars = copy_ln(trans_ff_ln, snt_vars, ln2_name)
@@ -250,7 +258,7 @@ ax.set_title('Sonnet vs transferred Keras predictions, human track 0, all 896 bi
 fig.legend()
 fig.savefig(os.path.join(output_dir, "weight_transfer_equivalence.png"))
 
-print("Keras model saved to disk!\nModel: {os.path.join(output_dir, 'enformer_keras_model')}[.keras|.h5]\nWeights: {os.path.join(output_dir, 'enformer_keras_weights')}[.h5|(.index +. data-00000-of-00001 + checkpoint)]")
+print(f"Keras model saved to disk!\nModel: {os.path.join(output_dir, 'enformer_keras_model')}[.keras|.h5]\nWeights: {os.path.join(output_dir, 'enformer_keras_weights')}[.h5|(.index +. data-00000-of-00001 + checkpoint)]")
 
 print("""
 To load the model, use tf.keras.models.load_model() with custom_objects like this:
