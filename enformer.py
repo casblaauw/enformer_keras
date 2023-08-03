@@ -405,13 +405,12 @@ class MHSelfAttention(layers.Layer):
         # output shape:[B, T, H*(Q|K) or H*V]
         # B batch size, T sequence length, H*(Q|K) QK_proj_dim or H*V V_proj_dim
         output = tf.linalg.matmul(inputs, weight)
-        # shapes = weight.get_shape()
         # T sequence length
-        seq_len = output.shape[-2]
+        seq_len = tf.shape(output)[-2]
         # number of features of the query/key matrix (_QK_dim) or value matrix (_V_dim) before projecting across heads
         # depending on whether Q, K or V input is passed
-        # (Q|K) or V      
-        QKV_dim = output.shape[-1]//self._num_heads
+        # (Q|K) or V
+        QKV_dim = tf.shape(output)[-1]//self._num_heads
         # split heads (H) * channels (H/Q or V) into separate axes
         # output shape:[B, T, H, (Q|K) or V]
         multihead_out = tf.reshape(output, shape=(-1, seq_len, self._num_heads, QKV_dim))
@@ -422,7 +421,7 @@ class MHSelfAttention(layers.Layer):
     
     def call(self, inputs, training=False):
         # input sequence length
-        seq_len = inputs.shape[1]
+        seq_len = tf.cast(tf.shape(inputs)[1], tf.float32)
         # compute a multi-headed projection of Q based on the inputs
         # output shape:[B, H, T, (Q|K)] confirmed shape:[1, 8, 1536, 64]
         Q = self._multihead_output(self._Q_w, inputs)
@@ -439,7 +438,7 @@ class MHSelfAttention(layers.Layer):
         
         if self._pos_encoding:
             # project positions to form relative keys (seq_len*2)
-            distances = tf.range(-seq_len + 1, seq_len, dtype=tf.float32)[tf.newaxis]
+            distances = tf.range(1-seq_len, seq_len, dtype=tf.float32)[tf.newaxis]
             # Positional encodings output: [B, 2T-1, C//H] = [1, 3071, 192]
             # 2T-1 = Relative keys, C//H = num pos feats
             positional_encodings = pos_feats_all(positions = distances,
@@ -485,7 +484,7 @@ class MHSelfAttention(layers.Layer):
         # trans_out shape:[B, T', H, V] confirmed shape:[1, 1536, 8, 192]
         trans_out = tf.transpose(attention, [0, 2, 1, 3])
         # attended_embeds shape:(B, T', H*V] confirmed shape:[1, 1536, 1536]
-        attended_embeds = tf.reshape(trans_out, shape=(-1, trans_out.shape[-3], self._V_proj_dim))
+        attended_embeds = tf.reshape(trans_out, shape=(-1, tf.shape(trans_out)[-3], self._V_proj_dim))
         # output = self._to_out(attended_embeds)
         output = tf.linalg.matmul(attended_embeds, self._out_w) + self._out_b
         
@@ -515,7 +514,12 @@ def relative_shift(x):
     # we prepend zeros on the final timescale dimension
     to_pad = tf.zeros_like(x[..., :1])
     x = tf.concat([to_pad, x], -1)
-    _, num_heads, t1, t2 = x.shape
+    # t1 and t2 are expected to be the same, as they are result of 
+    # matmul(Q + self._r_w_bias, K, transpose_b=True) -> [B, H, T', T]
+    # so should be the seq_lengths/num_bins of Q and K, which should be the same
+    num_heads = tf.shape(x)[1]
+    t1 = tf.shape(x)[2]
+    t2 = tf.shape(x)[3]
     x = tf.reshape(x, [-1, num_heads, t2, t1])
     x = tf.slice(x, [0, 0, 1, 0], [-1, -1, -1, -1])
     x = tf.reshape(x, [-1, num_heads, t1, t2-1])
