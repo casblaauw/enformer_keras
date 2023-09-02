@@ -188,38 +188,45 @@ class PointwiseConv1D(layers.Conv1D):
         __doc__ = getdoc(self)
 
 class Score(layers.Layer):
-    def __init__(self, score_mask, bin_reduce = 'sum', track_reduce = None, name = "Score", **kwargs):
+    def __init__(self, bin_idxs, track_idxs, bin_reduce = 'sum', track_reduce = None, name = "Score", **kwargs):
         """A layer that extracts and sums a certain region from the output, to return a scalar or smaller array of scores.
         Useful for many-head output models like Enformer, to reduce the data moved to CPU.
-        score_mask: a (n_bins, n_channels)-sized binary (0/1) tensor, indicating which indexes to use for scoring and which to set to 0.
+        bin_idxs/track_idxs: a list or array of indexes to extract (and optionally reduce). 
         bin_reduce/track_reduce: one of None/'sum'/'mean'/'max', indicates the way the score is reduced from multiple bins/tracks into one.
             Bins are reduced first, then tracks are reduced. 
             Passing None as method skips that reduction step. 
         Output: a scalar if both reduction steps are used and batch size is 1. Otherwise, an array with (batch,) and optionally bins and tracks if not reduced.
         """
         super(Score, self).__init__(name = name, **kwargs)
-        self._score_mask = score_mask
+
+        self._bin_idxs = bin_idxs
+        self._track_idxs = track_idxs
         self._bin_reduce = bin_reduce
         self._track_reduce = track_reduce
-        
+
         self._bin_reduce_fun = get_reduce_fun(bin_reduce)
         self._track_reduce_fun = get_reduce_fun(track_reduce)
     
     def get_config(self):
         config = super().get_config()
         config.update({
-            "score_mask": self._score_mask,
+            "bin_idxs": self._bin_idxs,
+            "track_idxs": self._track_idxs,
             "bin_reduce": self._bin_reduce,
             "track_reduce": self._track_reduce,
         })
         return config
     
     def call(self, inputs, training = False):
-        x = inputs * score_mask
+        # Drop non-selected bins 
+        x = tf.gather(tf.gather(inputs, self._bin_idxs, axis = 1), self._track_idxs, axis = 2)
+        # Apply reduction over bins
         if self._bin_reduce:
-            x = self._bin_reduce_fun(x, axis = 1) # [batch, bins, tracks] -> (batch, tracks) 
+            x = self._bin_reduce_fun(x, axis = 1) # (batch, bins, tracks) -> (batch, tracks) 
+        # Apply reduction over tracks
         if self._track_reduce:
             x = self._track_reduce_fun(x, axis = -1) # (batch, bins, tracks) -> (batch, bins) or (batch, tracks) -> (batch)
+            
         return x
         
 # Attention pooling layer
