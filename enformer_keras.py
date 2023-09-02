@@ -23,7 +23,6 @@ def build_model(channels: int = 1536,
                 target_length = 896,
                 dropout_rate = 0.4,
                 pooling_type: str = 'attention',
-                to_freeze: Optional[List] = None,
                 name: str = 'enformer',
                 **kwargs):
     # Fixed params that could be made variable at some point
