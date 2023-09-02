@@ -187,6 +187,48 @@ class PointwiseConv1D(layers.Conv1D):
         super(PointwiseConv1D, self).__init__(filters = filters, kernel_size = 1, name = name, **kwargs)
         __doc__ = getdoc(self)
 
+class Score(layers.Layer):
+    def __init__(self, bin_idxs, track_idxs, bin_reduce = 'sum', track_reduce = None, name = "Score", **kwargs):
+        """A layer that extracts and sums a certain region from the output, to return a scalar or smaller array of scores.
+        Useful for many-head output models like Enformer, to reduce the data moved to CPU.
+        bin_idxs/track_idxs: a list or array of indexes to extract (and optionally reduce). 
+        bin_reduce/track_reduce: one of None/'sum'/'mean'/'max', indicates the way the score is reduced from multiple bins/tracks into one.
+            Bins are reduced first, then tracks are reduced. 
+            Passing None as method skips that reduction step. 
+        Output: a scalar if both reduction steps are used and batch size is 1. Otherwise, an array with (batch,) and optionally bins and tracks if not reduced.
+        """
+        super(Score, self).__init__(name = name, **kwargs)
+
+        self._bin_idxs = bin_idxs
+        self._track_idxs = track_idxs
+        self._bin_reduce = bin_reduce
+        self._track_reduce = track_reduce
+
+        self._bin_reduce_fun = get_reduce_fun(bin_reduce)
+        self._track_reduce_fun = get_reduce_fun(track_reduce)
+    
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "bin_idxs": self._bin_idxs,
+            "track_idxs": self._track_idxs,
+            "bin_reduce": self._bin_reduce,
+            "track_reduce": self._track_reduce,
+        })
+        return config
+    
+    def call(self, inputs, training = False):
+        # Drop non-selected bins 
+        x = tf.gather(tf.gather(inputs, self._bin_idxs, axis = 1), self._track_idxs, axis = 2)
+        # Apply reduction over bins
+        if self._bin_reduce:
+            x = self._bin_reduce_fun(x, axis = 1) # (batch, bins, tracks) -> (batch, tracks) 
+        # Apply reduction over tracks
+        if self._track_reduce:
+            x = self._track_reduce_fun(x, axis = -1) # (batch, bins, tracks) -> (batch, bins) or (batch, tracks) -> (batch)
+            
+        return x
+        
 # Attention pooling layer
 class AttentionPooling1D(layers.Layer):
     """Pooling operation with optional weights."""
@@ -489,6 +531,18 @@ class MHSelfAttention(layers.Layer):
         output = tf.linalg.matmul(attended_embeds, self._out_w) + self._out_b
         
         return output
+
+def get_reduce_fun(metric):
+    if metric is None:
+        return None
+    elif metric == 'sum':
+        return tf.math.reduce_sum
+    elif metric == 'mean': 
+        return tf.math.reduce_mean
+    elif metric == 'max': 
+        return tf.math.reduce_max
+    else:
+        raise ValueError(f"`metric` must be one of None/'sum'/'mean'/'max', not {metric}")
 
 # --------- start of utils.py ---------
 
