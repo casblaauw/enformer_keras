@@ -11,12 +11,12 @@ import urllib.request
 if not os.path.exists('enformer_snt.py'):
     urllib.request.urlretrieve("https://raw.githubusercontent.com/deepmind/deepmind-research/master/enformer/enformer.py", "enformer_snt.py")
 if not os.path.exists('attention_module.py'):
-    urllib.request.urlretrieve("https://raw.githubusercontent.com/deepmind/deepmind-research/master/enformer/attention_module.py")
+    urllib.request.urlretrieve("https://raw.githubusercontent.com/deepmind/deepmind-research/master/enformer/attention_module.py", "attention_module.py")
     
 import tensorflow as tf
 import sonnet as snt
 import enformer_snt
-import enformer as enformer_keras
+import enformer_keras
 
 print("TensorFlow version {}".format(tf.__version__))
 print("Sonnet version {}".format(snt.__version__))
